@@ -24,9 +24,10 @@ foreach ($Scope in @("per-user", "per-machine")) {
   $Source = "packaging\windows\dsh-boot-$Scope.wxs"
   $ProductObj = Join-Path $Work "Product-$Scope.wixobj"
   $ComponentsObj = Join-Path $Work "Components-$Scope.wixobj"
+  $CandleOut = $Work.TrimEnd('\') + '\'
 
   Write-Host "dsh-boot: compiling $Scope MSI"
-  & candle.exe -nologo -arch x64 "-dSourceDir=$RuntimeDir" "-dVersion=$Version" $Source $Components "-out" $Work
+  & candle.exe -nologo -arch x64 "-dSourceDir=$RuntimeDir" "-dVersion=$Version" $Source $Components "-out" $CandleOut
   if ($LASTEXITCODE -ne 0) { throw "candle.exe failed for $Scope with exit code $LASTEXITCODE" }
 
   # Move the two objects aside so the next scope's compile cannot overwrite them.
