@@ -15,6 +15,7 @@
              Comments="Installs the dsh-boot service launcher, bundled Node.js, pnpm, dsh, and the web-UI restart plugin." />
 
     <MajorUpgrade DowngradeErrorMessage="A newer version of dsh-boot is already installed." />
+    <MediaTemplate EmbedCab="yes" />
 
     <!-- Per-user installs never elevate. HKCU is the only writable environment hive. -->
     <Property Id="ARPCOMMENTS" Value="Per-user installation: PATH is updated in HKCU\Environment." />
