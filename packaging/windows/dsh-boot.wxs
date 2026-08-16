@@ -95,15 +95,15 @@
     </DirectoryRef>
 
     <CustomAction Id="AddUserPath"
-                  Directory="APPLICATIONFOLDER"
-                  ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[APPLICATIONFOLDER]scripts\update-user-path.ps1&quot; add &quot;[APPLICATIONFOLDER]bin&quot;"
+                  Directory="SystemFolder"
+                  ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command &quot;&amp; { $ErrorActionPreference='Stop'; $Action=$args[0]; $Target=$args[1]; $cur=(Get-ItemProperty -Path 'HKCU:\Environment' -Name Path -ErrorAction SilentlyContinue).Path; if($null -eq $cur){$cur=''}; $entries=@($cur -split ';' | Where-Object { $_ -ne '' }); $norm=$Target.TrimEnd('\').ToLowerInvariant(); $remaining=@($entries | Where-Object { $_.TrimEnd('\').ToLowerInvariant() -ne $norm }); if($Action -eq 'add'){ if($remaining.Count -eq $entries.Count){ $remaining += $Target } }; Set-ItemProperty -Path 'HKCU:\Environment' -Name Path -Value ($remaining -join ';') -Type ExpandString; Start-Process -FilePath ($env:SystemRoot+'\System32\rundll32.exe') -ArgumentList 'user32.dll,UpdatePerUserSystemParameters' -WindowStyle Hidden }&quot; add &quot;[APPLICATIONFOLDER]bin&quot;"
                   Execute="immediate"
                   Impersonate="yes"
                   Return="check" />
 
     <CustomAction Id="RemoveUserPath"
-                  Directory="APPLICATIONFOLDER"
-                  ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[APPLICATIONFOLDER]scripts\update-user-path.ps1&quot; remove &quot;[APPLICATIONFOLDER]bin&quot;"
+                  Directory="SystemFolder"
+                  ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command &quot;&amp; { $ErrorActionPreference='Stop'; $Action=$args[0]; $Target=$args[1]; $cur=(Get-ItemProperty -Path 'HKCU:\Environment' -Name Path -ErrorAction SilentlyContinue).Path; if($null -eq $cur){$cur=''}; $entries=@($cur -split ';' | Where-Object { $_ -ne '' }); $norm=$Target.TrimEnd('\').ToLowerInvariant(); $remaining=@($entries | Where-Object { $_.TrimEnd('\').ToLowerInvariant() -ne $norm }); if($Action -eq 'add'){ if($remaining.Count -eq $entries.Count){ $remaining += $Target } }; Set-ItemProperty -Path 'HKCU:\Environment' -Name Path -Value ($remaining -join ';') -Type ExpandString; Start-Process -FilePath ($env:SystemRoot+'\System32\rundll32.exe') -ArgumentList 'user32.dll,UpdatePerUserSystemParameters' -WindowStyle Hidden }&quot; remove &quot;[APPLICATIONFOLDER]bin&quot;"
                   Execute="immediate"
                   Impersonate="yes"
                   Return="ignore" />
