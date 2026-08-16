@@ -25,14 +25,16 @@ foreach ($Scope in @("per-user", "per-machine")) {
   $ProductObj = Join-Path $Work "Product-$Scope.wixobj"
   $ComponentsObj = Join-Path $Work "Components-$Scope.wixobj"
   $CandleOut = $Work.TrimEnd('\') + '\'
+  $SourceObj = Join-Path $Work ((Split-Path $Source -Leaf) -replace '\.wxs$', '.wixobj')
+  $RuntimeObj = Join-Path $Work "runtime-components.wixobj"
 
   Write-Host "dsh-boot: compiling $Scope MSI"
   & candle.exe -nologo -arch x64 "-dSourceDir=$RuntimeDir" "-dVersion=$Version" $Source $Components "-out" $CandleOut
   if ($LASTEXITCODE -ne 0) { throw "candle.exe failed for $Scope with exit code $LASTEXITCODE" }
 
   # Move the two objects aside so the next scope's compile cannot overwrite them.
-  Move-Item (Join-Path $Work "Product.wixobj") $ProductObj -Force
-  Move-Item (Join-Path $Work "runtime-components.wixobj") $ComponentsObj -Force
+  Move-Item $SourceObj $ProductObj -Force
+  Move-Item $RuntimeObj $ComponentsObj -Force
 
   $Msi = Join-Path $OutDir "dsh-boot-$Version-win32-x64-$Scope.msi"
   Write-Host "dsh-boot: linking $Msi"
