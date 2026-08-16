@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="dsh-boot (per-user)"
+           Language="1033"
+           Version="$(var.Version)"
+           Manufacturer="dsh-boot contributors"
+           UpgradeCode="6c1f4aa8-56d9-4d0b-a0e7-3c05b4a0a11d">
+
+    <Package InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perUser"
+             InstallPrivileges="limited"
+             Description="Lightweight DeepSeek Harness (dsh) launcher"
+             Comments="Installs the dsh-boot service launcher, bundled Node.js, pnpm, dsh, and the web-UI restart plugin." />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of dsh-boot is already installed." />
+
+    <!-- Per-user installs never elevate. HKCU is the only writable environment hive. -->
+    <Property Id="ARPCOMMENTS" Value="Per-user installation: PATH is updated in HKCU\Environment." />
+    <Property Id="ARPNOREPAIR" Value="1" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="LocalAppDataProgramsFolder" Name="Programs">
+          <Directory Id="INSTALLDIR" Name="dsh-boot" />
+        </Directory>
+      </Directory>
+
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="DeepSeek Harness" />
+      </Directory>
+
+      <Directory Id="StartupFolder" />
+    </Directory>
+
+    <Feature Id="MainFeature" Title="dsh-boot" Level="1">
+      <ComponentGroupRef Id="RuntimeComponents" />
+      <ComponentRef Id="StartMenuShortcutComponent" />
+      <ComponentRef Id="StartupShortcutComponent" />
+    </Feature>
+
+    <DirectoryRef Id="ApplicationProgramsFolder">
+      <Component Id="StartMenuShortcutComponent" Guid="*">
+        <Shortcut Id="StartMenuShortcut"
+                  Name="DeepSeek Harness"
+                  Description="Start the DeepSeek Harness web service and open the web UI"
+                  Target="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"
+                  Arguments='-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[INSTALLDIR]scripts\dsh-boot-launch.ps1&quot; launch'
+                  WorkingDirectory="INSTALLDIR" />
+        <RemoveFolder Id="RemoveApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\dsh-boot"
+                       Name="startMenuShortcut"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="StartupFolder">
+      <Component Id="StartupShortcutComponent" Guid="*">
+        <Shortcut Id="StartupShortcut"
+                  Name="dsh-boot"
+                  Description="Start the DeepSeek Harness web service at login"
+                  Target="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"
+                  Arguments='-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[INSTALLDIR]scripts\dsh-boot-launch.ps1&quot; start --no-browser'
+                  WorkingDirectory="INSTALLDIR" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\dsh-boot"
+                       Name="startupShortcut"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <CustomAction Id="AddUserPath"
+                  ExeCommand='"[System64Folder]WindowsPowerShell\v1.0\powershell.exe" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "[INSTALLDIR]scripts\update-user-path.ps1" add "[INSTALLDIR]bin"'
+                  Execute="immediate"
+                  Impersonate="yes"
+                  Return="check" />
+
+    <CustomAction Id="RemoveUserPath"
+                  ExeCommand='"[System64Folder]WindowsPowerShell\v1.0\powershell.exe" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "[INSTALLDIR]scripts\update-user-path.ps1" remove "[INSTALLDIR]bin"'
+                  Execute="immediate"
+                  Impersonate="yes"
+                  Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="AddUserPath" After="InstallValidate"><![CDATA[NOT Installed]]></Custom>
+      <Custom Action="RemoveUserPath" After="InstallValidate"><![CDATA[REMOVE="ALL"]]></Custom>
+    </InstallExecuteSequence>
+  </Product>
+</Wix>

@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="dsh-boot (per-machine)"
+           Language="1033"
+           Version="$(var.Version)"
+           Manufacturer="dsh-boot contributors"
+           UpgradeCode="2d9c5f42-1d68-44e2-a941-6f0701bb86c8">
+
+    <Package InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perMachine"
+             InstallPrivileges="elevated"
+             Description="Lightweight DeepSeek Harness (dsh) launcher"
+             Comments="Installs the dsh-boot service launcher, bundled Node.js, pnpm, dsh, and the web-UI restart plugin." />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of dsh-boot is already installed." />
+    <Property Id="ARPCOMMENTS" Value="Per-machine installation: PATH is updated in HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment." />
+    <Property Id="ARPNOREPAIR" Value="1" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLDIR" Name="dsh-boot" />
+      </Directory>
+
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="DeepSeek Harness" />
+      </Directory>
+
+      <Directory Id="CommonStartupFolder" />
+    </Directory>
+
+    <Feature Id="MainFeature" Title="dsh-boot" Level="1">
+      <ComponentGroupRef Id="RuntimeComponents" />
+      <ComponentRef Id="StartMenuShortcutComponent" />
+      <ComponentRef Id="StartupShortcutComponent" />
+      <ComponentRef Id="MachinePathComponent" />
+    </Feature>
+
+    <DirectoryRef Id="ApplicationProgramsFolder">
+      <Component Id="StartMenuShortcutComponent" Guid="*">
+        <Shortcut Id="StartMenuShortcut"
+                  Name="DeepSeek Harness"
+                  Description="Start the DeepSeek Harness web service and open the web UI"
+                  Target="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"
+                  Arguments='-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[INSTALLDIR]scripts\dsh-boot-launch.ps1&quot; launch'
+                  WorkingDirectory="INSTALLDIR" />
+        <RemoveFolder Id="RemoveApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue Root="HKLM"
+                       Key="Software\dsh-boot"
+                       Name="startMenuShortcut"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="CommonStartupFolder">
+      <Component Id="StartupShortcutComponent" Guid="*">
+        <Shortcut Id="StartupShortcut"
+                  Name="dsh-boot"
+                  Description="Start the DeepSeek Harness web service at login"
+                  Target="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"
+                  Arguments='-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[INSTALLDIR]scripts\dsh-boot-launch.ps1&quot; start --no-browser'
+                  WorkingDirectory="INSTALLDIR" />
+        <RegistryValue Root="HKLM"
+                       Key="Software\dsh-boot"
+                       Name="startupShortcut"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="MachinePathComponent" Guid="*">
+        <!-- MSI's Environment table is per-machine only; this is why the
+             per-user package uses the HKCU custom action instead. -->
+        <Environment Id="MachinePath"
+                     Name="Path"
+                     Action="set"
+                     Part="last"
+                     System="yes"
+                     Value="[INSTALLDIR]bin" />
+        <RegistryValue Root="HKLM"
+                       Key="Software\dsh-boot"
+                       Name="machinePath"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+  </Product>
+</Wix>

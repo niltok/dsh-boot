@@ -1,0 +1,26 @@
+{
+  "name": "@dsh-boot/restart-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "dsh-boot restart plugin: a Settings -> General item that restarts the dsh web service through the dsh-boot supervisor",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js"
+  ],
+  "license": "MIT"
+}

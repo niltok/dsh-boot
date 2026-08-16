@@ -1,0 +1,118 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run tests
+        run: node --test packages/cli/test/*.test.js
+
+  build:
+    name: Build (${{ matrix.target }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022
+            target: win32-x64
+          - runner: macos-14
+            target: darwin-arm64
+          - runner: macos-13
+            target: darwin-x64
+          - runner: ubuntu-24.04
+            target: linux-x64
+
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Linux native build prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential python3
+
+      - name: Bundle self-contained runtime
+        run: node scripts/bundle-runtime.mjs ${{ matrix.target }}
+
+      - name: Install WiX toolset
+        if: runner.os == 'Windows'
+        run: choco install wixtoolset -y --no-progress
+
+      - name: Package Windows Installer (per-user and per-machine MSI)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/wix-build.ps1 -RuntimeDir dist/runtime-win32-x64 -OutDir dist
+
+      - name: Package macOS app DMG and Homebrew tarball
+        if: runner.os == 'macOS'
+        run: |
+          node scripts/package-macos.mjs ${{ endsWith(matrix.target, 'arm64') && 'arm64' || 'x64' }} dist/runtime-${{ matrix.target }}
+
+      - name: Package Linux portable tarball
+        if: runner.os == 'Linux'
+        run: |
+          node scripts/package-linux.mjs ${{ endsWith(matrix.target, 'arm64') && 'arm64' || 'x64' }} dist/runtime-${{ matrix.target }}
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          if [ "$RUNNER_OS" = "Windows" ]; then cp dist/*.msi artifacts/ || true; fi
+          if [ "$RUNNER_OS" = "macOS" ]; then cp dist/*.dmg dist/*darwin*.tar.gz artifacts/ || true; fi
+          if [ "$RUNNER_OS" = "Linux" ]; then cp dist/*linux*.tar.gz artifacts/ || true; fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dsh-boot-${{ matrix.target }}
+          path: artifacts/*
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Checksums
+        shell: bash
+        run: |
+          cd artifacts
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          generate_release_notes: true
+          files: |
+            artifacts/*
