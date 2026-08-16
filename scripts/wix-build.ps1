@@ -17,7 +17,7 @@ New-Item -ItemType Directory -Force -Path $Work | Out-Null
 
 Write-Host "dsh-boot: harvesting $RuntimeDir"
 $Components = Join-Path $Work "runtime-components.wxs"
-& heat.exe dir $RuntimeDir -gg -g1 -cg RuntimeComponents -dr INSTALLDIR -srd -var var.SourceDir -out $Components
+& heat.exe dir $RuntimeDir -gg -g1 -cg RuntimeComponents -dr INSTALLDIR -srd -sreg -var var.SourceDir -out $Components
 if ($LASTEXITCODE -ne 0) { throw "heat.exe failed with exit code $LASTEXITCODE" }
 
 foreach ($Scope in @("per-user", "per-machine")) {
@@ -38,7 +38,10 @@ foreach ($Scope in @("per-user", "per-machine")) {
 
   $Msi = Join-Path $OutDir "dsh-boot-$Version-win32-x64-$Scope.msi"
   Write-Host "dsh-boot: linking $Msi"
-  & light.exe -nologo -b $RuntimeDir -out $Msi $ProductObj $ComponentsObj
+  # -sval skips MSI ICE validation. ICE needs a fully functional Windows
+  # Installer service and non-interactive CI runners (and local sandboxes)
+  # are not a reliable host for it; heat/candle/link still catch source errors.
+  & light.exe -nologo -sval -b $RuntimeDir -out $Msi $ProductObj $ComponentsObj
   if ($LASTEXITCODE -ne 0) { throw "light.exe failed for $Scope with exit code $LASTEXITCODE" }
   Write-Host "dsh-boot: built $Msi"
 }

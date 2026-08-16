@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -56,17 +56,10 @@ async function download(url, destination) {
 }
 
 function extractNodeArchive() {
-  const unpack = join(repoRoot, "dist", `.node-unpack-${key}`);
-  rmSync(unpack, { recursive: true, force: true });
-  mkdirSync(unpack, { recursive: true });
-  rmSync(join(outRoot, "node"), { recursive: true, force: true });
-  mkdirSync(join(outRoot, "node"), { recursive: true });
-  run("tar", ["-xf", archivePath, "-C", unpack]);
-  const top = readdirSync(unpack).find((entry) => entry.startsWith("node-v"));
-  if (top === void 0) throw new Error(`dsh-boot: unexpected Node archive layout in ${unpack}`);
-  const nodeDir = join(unpack, top);
-  for (const entry of readdirSync(nodeDir)) renameSync(join(nodeDir, entry), join(outRoot, "node", entry));
-  rmSync(unpack, { recursive: true, force: true });
+  const nodeDir = join(outRoot, "node");
+  rmSync(nodeDir, { recursive: true, force: true });
+  mkdirSync(nodeDir, { recursive: true });
+  run("tar", ["-xf", archivePath, "-C", nodeDir, "--strip-components", "1"]);
 }
 
 function writeRuntimeManifest() {
