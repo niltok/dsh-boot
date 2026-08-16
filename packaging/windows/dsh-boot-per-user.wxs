@@ -76,12 +76,14 @@
     </DirectoryRef>
 
     <CustomAction Id="AddUserPath"
+                  Directory="INSTALLDIR"
                   ExeCommand='"[System64Folder]WindowsPowerShell\v1.0\powershell.exe" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "[INSTALLDIR]scripts\update-user-path.ps1" add "[INSTALLDIR]bin"'
                   Execute="immediate"
                   Impersonate="yes"
                   Return="check" />
 
     <CustomAction Id="RemoveUserPath"
+                  Directory="INSTALLDIR"
                   ExeCommand='"[System64Folder]WindowsPowerShell\v1.0\powershell.exe" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "[INSTALLDIR]scripts\update-user-path.ps1" remove "[INSTALLDIR]bin"'
                   Execute="immediate"
                   Impersonate="yes"
