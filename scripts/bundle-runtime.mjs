@@ -67,6 +67,7 @@ function writeRuntimeManifest() {
     name: "dsh-boot-runtime",
     version,
     private: true,
+    type: "module",
     description: "Self-contained dsh-boot runtime: Node.js, pnpm, dsh, and the restart plugin",
     dependencies: {
       "@deepseek-ai/dsh": DSH_VERSION,
@@ -80,7 +81,13 @@ function installRuntime() {
   // npm produces the flat, self-contained node_modules tree we want inside
   // the packaged runtime (no pnpm virtual store reparse points for WiX to
   // harvest twice). pnpm is still bundled as a dependency for `dsh plugin`.
-  run("npm", ["install", "--omit=dev", "--no-audit", "--no-fund", "--no-package-lock", "--legacy-peer-deps"], {
+  //
+  // Do NOT pass --legacy-peer-deps here: dsh-app-boot imports
+  // @deepseek-ai/cordis-plugin-group, which is only declared as a peer
+  // dependency of dsh-app-boot. With legacy peer resolution npm skips that
+  // package and the installed dsh CLI dies at import time with
+  // ERR_MODULE_NOT_FOUND. Default npm behavior auto-installs the peer.
+  run("npm", ["install", "--omit=dev", "--no-audit", "--no-fund", "--no-package-lock"], {
     cwd: outRoot,
     shell: process.platform === "win32",
     env: { ...process.env, npm_config_update_notifier: "false" },
@@ -139,6 +146,16 @@ function verifyRuntime() {
   for (const file of [node, dsh, plugin]) {
     if (!existsSync(file)) throw new Error(`dsh-boot: bundled runtime is missing ${file}`);
   }
+
+  // `--version` is enough to import dsh's boot graph, including
+  // dsh-app-boot. A missing peer dependency (for example
+  // @deepseek-ai/cordis-plugin-group) fails here at build time instead of
+  // making every installed Start Menu shortcut flash and exit.
+  // stdio: "inherit" keeps the smoke test usable in constrained build
+  // environments where pipe-based child stdio is not available.
+  const smoke = spawnSync(node, [dsh, "--version"], { stdio: "inherit", timeout: 120_000 });
+  if (smoke.error !== void 0) throw smoke.error;
+  if (smoke.status !== 0) throw new Error(`dsh-boot: bundled dsh smoke test failed (exit ${smoke.status ?? "signal"})`);
 }
 
 async function main() {
@@ -163,6 +180,11 @@ async function main() {
   writeFileSync(join(outRoot, ".dsh-boot-install"), `dsh-boot ${version}\n`);
   if (targetOs === "win32") writeWindowsWrappers();
   else writeUnixWrappers();
+
+  const iconSource = join(repoRoot, "packaging", "windows", "dsh-boot.ico");
+  if (existsSync(iconSource)) {
+    cpSync(iconSource, join(outRoot, "dsh-boot.ico"));
+  }
 
   verifyRuntime();
   console.log(`dsh-boot: runtime ready at ${outRoot}`);

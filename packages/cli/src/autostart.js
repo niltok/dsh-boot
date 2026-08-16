@@ -30,29 +30,36 @@ function windowsShortcutDir(system) {
   return join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "StartUp");
 }
 
-function runWindowsShortcut(action, system) {
+function runWindowsAutostart(action, system) {
   const launchScript = join(paths.installRoot, "scripts", "dsh-boot-launch.ps1");
+  const runKey = system
+    ? "HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+    : "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
   const script = String.raw`
 $ErrorActionPreference = 'Stop'
 $action = $env:DSH_BOOT_ACTION
-$dir = $env:DSH_BOOT_SHORTCUT_DIR
+$runKey = $env:DSH_BOOT_RUN_KEY
 $launch = $env:DSH_BOOT_LAUNCH_SCRIPT
-$lnk = Join-Path $dir 'dsh-boot.lnk'
+$dir = $env:DSH_BOOT_SHORTCUT_DIR
+$lnk = Join-Path $dir 'DSH Boot.lnk'
+$oldLnk = Join-Path $dir 'dsh-boot.lnk'
+$name = 'DSH Boot'
+$target = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$value = '"' + $target + '" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $launch + '" start --no-browser'
 if ($action -eq 'enable') {
-  New-Item -ItemType Directory -Force -Path $dir | Out-Null
-  $shell = New-Object -ComObject WScript.Shell
-  $shortcut = $shell.CreateShortcut($lnk)
-  $shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-  $shortcut.Arguments = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $launch + '" start --no-browser'
-  $shortcut.WorkingDirectory = Split-Path -Parent (Split-Path -Parent $launch)
-  $shortcut.Description = 'Start the DeepSeek Harness web service at login'
-  $shortcut.Save()
+  New-Item -Path $runKey -Force | Out-Null
+  Set-ItemProperty -Path $runKey -Name $name -Value $value -Type String
+  Remove-Item -LiteralPath $lnk -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $oldLnk -Force -ErrorAction SilentlyContinue
   Write-Output 'enabled'
 } elseif ($action -eq 'disable') {
+  Remove-ItemProperty -Path $runKey -Name $name -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $lnk -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $oldLnk -Force -ErrorAction SilentlyContinue
   Write-Output 'disabled'
 } elseif ($action -eq 'status') {
-  if (Test-Path -LiteralPath $lnk) { Write-Output 'enabled' } else { Write-Output 'disabled' }
+  $item = Get-ItemProperty -Path $runKey -Name $name -ErrorAction SilentlyContinue
+  if ($null -ne $item -and $null -ne $item.$name) { Write-Output 'enabled' } else { Write-Output 'disabled' }
 } else {
   throw "unknown action: $action"
 }
@@ -64,6 +71,7 @@ if ($action -eq 'enable') {
       env: {
         ...process.env,
         DSH_BOOT_ACTION: action,
+        DSH_BOOT_RUN_KEY: runKey,
         DSH_BOOT_SHORTCUT_DIR: windowsShortcutDir(system),
         DSH_BOOT_LAUNCH_SCRIPT: launchScript,
       },
@@ -236,7 +244,7 @@ export function setAutostart(action, { system = false } = {}) {
     throw new Error(`dsh-boot: invalid autostart action ${action}`);
   }
 
-  if (process.platform === "win32") return runWindowsShortcut(action, system);
+  if (process.platform === "win32") return runWindowsAutostart(action, system);
   if (process.platform === "darwin") {
     if (action === "enable") return enableMacosAutostart();
     if (action === "disable") return disableMacosAutostart();

@@ -12,6 +12,7 @@ import { writeInjectedPatch } from "./patch.js";
 const DEFAULT_WEB_URL = "http://127.0.0.1:3080";
 const START_TIMEOUT_MS = 90_000;
 const RESTART_TIMEOUT_MS = 90_000;
+const CONTROL_ACK_GRACE_MS = 500;
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 
 let currentChild;
@@ -116,6 +117,21 @@ export async function fetchWeb(url = currentState?.webUrl, timeoutMs = 2500) {
   }
 }
 
+export async function fetchBootId(url, expectedBootId, timeoutMs = 2500) {
+  if (url === void 0 || expectedBootId === void 0) return false;
+  try {
+    const response = await fetch(`${url.replace(/\/+$/, "")}/dsh-boot/presence`, {
+      signal: AbortSignal.timeout(timeoutMs),
+      cache: "no-store",
+    });
+    if (!response.ok) return false;
+    const body = await response.json();
+    return body?.ok === true && body?.bootId === expectedBootId;
+  } catch {
+    return false;
+  }
+}
+
 async function requestControl(pathname, { timeoutMs = 5_000 } = {}) {
   const state = readState();
   if (state?.controlPort === void 0 || state?.token === void 0) {
@@ -155,7 +171,11 @@ export async function waitForRunning(timeoutMs = START_TIMEOUT_MS) {
     } else if (state.phase === "failed") {
       throw new Error(state.lastError ?? "dsh-boot: dsh failed to start");
     } else if (state.phase === "running" && state.webUrl !== void 0) {
-      if (await fetchWeb(state.webUrl)) return state;
+      const ready =
+        state.bootId === void 0
+          ? await fetchWeb(state.webUrl)
+          : await fetchBootId(state.webUrl, state.bootId);
+      if (ready) return state;
       lastError = new Error(`dsh-boot: dsh is bound but ${state.webUrl} is not answering yet`);
     } else {
       lastError = new Error(`dsh-boot: dsh is ${state.phase ?? "starting"}`);
@@ -176,10 +196,14 @@ function delay(ms) {
 
 function spawnDetachedSupervisor() {
   ensureBootDir();
+  // detached must be true on Windows as well: with detached:false the
+  // supervisor inherits the launcher's console, so it is killed as soon as
+  // the Start Menu shortcut's PowerShell window closes. windowsHide keeps
+  // the detached process from flashing a new console window.
   const child = spawn(paths.nodeBin, [paths.cliEntry, "run"], {
     cwd: homedir(),
     env: { ...process.env, DSH_BOOT_SUPERVISOR: "1" },
-    detached: process.platform !== "win32",
+    detached: true,
     windowsHide: true,
     stdio: "ignore",
   });
@@ -416,7 +440,7 @@ function spawnDshChild() {
       for (;;) {
         if (settled) return;
         const url = parsedUrl ?? defaultWebUrl(startupArgs);
-        if (parsedUrl !== void 0 && (await fetchWeb(url, 2500))) {
+        if (parsedUrl !== void 0 && (await fetchWeb(url, 2500)) && (await fetchBootId(url, bootId, 2500))) {
           writeState({ phase: "running", webUrl: url, lastError: void 0 });
           log(`dsh is ready at ${url}`);
           finish();
@@ -519,6 +543,10 @@ async function performRestart() {
     writeState({ phase: "restarting", lastError: void 0 });
     log("restart requested from the web UI");
     try {
+      // Give the dsh process time to relay the 202 response back to the
+      // browser before it is stopped. Killing it immediately makes the UI
+      // report "restart request failed" even though the restart succeeds.
+      await delay(CONTROL_ACK_GRACE_MS);
       await stopDshChild({ timeoutMs: 15_000 });
       await spawnDshChild();
       writeState({ phase: "running", lastError: void 0 });
@@ -544,6 +572,10 @@ async function performShutdown() {
   writeState({ phase: "stopping" });
   log("shutdown requested");
   try {
+    // Give dsh time to relay the 202 response back to the browser before it
+    // is stopped; otherwise the web UI reports a shutdown failure even though
+    // the service is stopping successfully.
+    await delay(CONTROL_ACK_GRACE_MS);
     await stopDshChild({ timeoutMs: 15_000 });
   } catch (error) {
     log(`stop failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -592,8 +624,8 @@ function controlHandler(req, res) {
       sendJson(res, 409, { ok: false, error: "restart already in progress" });
       return;
     }
-    void performRestart().catch(() => {});
     sendJson(res, 202, { ok: true, status: "restarting" });
+    void performRestart().catch(() => {});
     return;
   }
 

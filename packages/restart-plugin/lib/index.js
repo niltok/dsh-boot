@@ -1,6 +1,8 @@
 const PRESENCE_PATH = "/dsh-boot/presence";
 const RESTART_PATH = "/dsh-boot/restart";
 const RESTART_HEADER = "x-dsh-boot-restart";
+const SHUTDOWN_PATH = "/dsh-boot/shutdown";
+const SHUTDOWN_HEADER = "x-dsh-boot-shutdown";
 
 /** The dsh webserver service is required before this plugin registers routes. */
 export const inject = ["webServer"];
@@ -26,6 +28,37 @@ function sameOrigin(req) {
   }
 }
 
+async function forwardControl(res, controlPort, controlToken, path) {
+  try {
+    const upstream = await fetch(`http://127.0.0.1:${String(controlPort)}${path}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-dsh-boot-token": controlToken,
+      },
+      body: "{}",
+      signal: AbortSignal.timeout(8000),
+    });
+    const text = await upstream.text();
+    let body = {};
+    try {
+      body = JSON.parse(text);
+    } catch {
+      // Keep the upstream raw diagnostic in the error path below.
+    }
+    if (!upstream.ok) {
+      json(res, 502, { ok: false, error: body.error ?? `supervisor returned HTTP ${upstream.status}` });
+      return;
+    }
+    json(res, upstream.status, body);
+  } catch (error) {
+    json(res, 502, {
+      ok: false,
+      error: `dsh-boot supervisor is unreachable: ${error instanceof Error ? error.message : String(error)}`,
+    });
+  }
+}
+
 /**
  * Host half of the dsh-boot restart plugin.
  *
@@ -48,7 +81,7 @@ export function apply(ctx) {
         json(res, 405, { ok: false, error: "method not allowed" });
         return;
       }
-      json(res, 200, { ok: true, enabled, bootId, restartPath: RESTART_PATH });
+      json(res, 200, { ok: true, enabled, bootId, restartPath: RESTART_PATH, shutdownPath: SHUTDOWN_PATH });
     },
   }), "dsh-boot: presence route");
 
@@ -71,35 +104,27 @@ export function apply(ctx) {
         json(res, 503, { ok: false, error: "dsh was not started by dsh-boot" });
         return;
       }
-
-      try {
-        const upstream = await fetch(`http://127.0.0.1:${String(controlPort)}/restart`, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-dsh-boot-token": controlToken,
-          },
-          body: "{}",
-          signal: AbortSignal.timeout(8000),
-        });
-        const text = await upstream.text();
-        let body = {};
-        try {
-          body = JSON.parse(text);
-        } catch {
-          // Keep the upstream raw diagnostic in the error path below.
-        }
-        if (!upstream.ok) {
-          json(res, 502, { ok: false, error: body.error ?? `supervisor returned HTTP ${upstream.status}` });
-          return;
-        }
-        json(res, upstream.status, body);
-      } catch (error) {
-        json(res, 502, {
-          ok: false,
-          error: `dsh-boot supervisor is unreachable: ${error instanceof Error ? error.message : String(error)}`,
-        });
-      }
+      await forwardControl(res, controlPort, controlToken, "/restart");
     },
   }), "dsh-boot: restart route");
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: "exact",
+    path: SHUTDOWN_PATH,
+    handler: async (req, res) => {
+      if (req.method !== "POST") {
+        json(res, 405, { ok: false, error: "POST required" });
+        return;
+      }
+      if (req.headers[SHUTDOWN_HEADER] !== "yes" || !sameOrigin(req)) {
+        json(res, 403, { ok: false, error: "forbidden" });
+        return;
+      }
+      if (!enabled) {
+        json(res, 503, { ok: false, error: "dsh was not started by dsh-boot" });
+        return;
+      }
+      await forwardControl(res, controlPort, controlToken, "/shutdown");
+    },
+  }), "dsh-boot: shutdown route");
 }

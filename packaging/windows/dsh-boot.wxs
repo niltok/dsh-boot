@@ -13,21 +13,22 @@
     <Property Id="ARPNOREPAIR" Value="1" />
     <Property Id="ApplicationFolderName" Value="dsh-boot" />
     <Property Id="DSH_BOOT_SCOPE" Secure="yes" />
-    <Property Id="WixAppFolder" Value="WixPerMachineFolder" />
+    <Property Id="WixAppFolder" Value="WixPerUserFolder" />
     <WixVariable Id="WixUISupportPerUser" Value="1" />
     <WixVariable Id="WixUISupportPerMachine" Value="1" />
 
-    <!-- Silent-install defaults: no elevation means current user, elevated means all users.
-         Conditions key off DSH_BOOT_SCOPE so the execute sequence cannot override the
-         choice made on the InstallScopeDlg. -->
-    <SetProperty Id="DSH_BOOT_SCOPE" Action="SetDefaultUserScope" Before="CostFinalize" Value="user" Condition="(NOT Privileged AND DSH_BOOT_SCOPE=&quot;&quot;) OR DSH_BOOT_SCOPE=&quot;user&quot;" />
-    <SetProperty Id="DSH_BOOT_SCOPE" Action="SetDefaultMachineScope" Before="CostFinalize" Value="machine" Condition="(Privileged AND DSH_BOOT_SCOPE=&quot;&quot;) OR DSH_BOOT_SCOPE=&quot;machine&quot;" />
-    <SetProperty Id="ALLUSERS" Action="SetDefaultAllUsersPerUser" Before="CostFinalize" Value="{}" Condition="(NOT Privileged AND DSH_BOOT_SCOPE=&quot;&quot;) OR DSH_BOOT_SCOPE=&quot;user&quot;" />
-    <SetProperty Id="ALLUSERS" Action="SetDefaultAllUsersMachine" Before="CostFinalize" Value="1" Condition="(Privileged AND DSH_BOOT_SCOPE=&quot;&quot;) OR DSH_BOOT_SCOPE=&quot;machine&quot;" />
-    <SetProperty Id="WixAppFolder" Action="SetDefaultWixAppFolderPerUser" Before="CostFinalize" Value="WixPerUserFolder" Condition="(NOT Privileged AND DSH_BOOT_SCOPE=&quot;&quot;) OR DSH_BOOT_SCOPE=&quot;user&quot;" />
-    <SetProperty Id="WixAppFolder" Action="SetDefaultWixAppFolderPerMachine" Before="CostFinalize" Value="WixPerMachineFolder" Condition="(Privileged AND DSH_BOOT_SCOPE=&quot;&quot;) OR DSH_BOOT_SCOPE=&quot;machine&quot;" />
-    <SetProperty Id="APPLICATIONFOLDER" Action="SetDefaultAppFolderPerUser" Before="CostFinalize" Value="[LocalAppDataFolder]Apps\[ApplicationFolderName]" Condition="(NOT Privileged AND DSH_BOOT_SCOPE=&quot;&quot;) OR DSH_BOOT_SCOPE=&quot;user&quot;" />
-    <SetProperty Id="APPLICATIONFOLDER" Action="SetDefaultAppFolderPerMachine" Before="CostFinalize" Value="[ProgramFiles64Folder][ApplicationFolderName]" Condition="(Privileged AND DSH_BOOT_SCOPE=&quot;&quot;) OR DSH_BOOT_SCOPE=&quot;machine&quot;" />
+    <!-- Silent-install default is always the current user. Even elevated
+         installs default to per-user unless the user explicitly chooses
+         "all users" on the InstallScopeDlg. Conditions key off DSH_BOOT_SCOPE
+         so the execute sequence cannot override the UI choice. -->
+    <SetProperty Id="DSH_BOOT_SCOPE" Action="SetDefaultUserScope" Before="CostFinalize" Value="user" Condition="DSH_BOOT_SCOPE=&quot;&quot;" />
+    <SetProperty Id="DSH_BOOT_SCOPE" Action="SetMachineScope" Before="CostFinalize" Value="machine" Condition="DSH_BOOT_SCOPE=&quot;machine&quot;" />
+    <SetProperty Id="ALLUSERS" Action="SetDefaultAllUsersPerUser" Before="CostFinalize" Value="{}" Condition="DSH_BOOT_SCOPE=&quot;&quot; OR DSH_BOOT_SCOPE=&quot;user&quot;" />
+    <SetProperty Id="ALLUSERS" Action="SetDefaultAllUsersMachine" Before="CostFinalize" Value="1" Condition="DSH_BOOT_SCOPE=&quot;machine&quot;" />
+    <SetProperty Id="WixAppFolder" Action="SetDefaultWixAppFolderPerUser" Before="CostFinalize" Value="WixPerUserFolder" Condition="DSH_BOOT_SCOPE=&quot;&quot; OR DSH_BOOT_SCOPE=&quot;user&quot;" />
+    <SetProperty Id="WixAppFolder" Action="SetDefaultWixAppFolderPerMachine" Before="CostFinalize" Value="WixPerMachineFolder" Condition="DSH_BOOT_SCOPE=&quot;machine&quot;" />
+    <SetProperty Id="APPLICATIONFOLDER" Action="SetDefaultAppFolderPerUser" Before="CostFinalize" Value="[LocalAppDataFolder]Apps\[ApplicationFolderName]" Condition="DSH_BOOT_SCOPE=&quot;&quot; OR DSH_BOOT_SCOPE=&quot;user&quot;" />
+    <SetProperty Id="APPLICATIONFOLDER" Action="SetDefaultAppFolderPerMachine" Before="CostFinalize" Value="[ProgramFiles64Folder][ApplicationFolderName]" Condition="DSH_BOOT_SCOPE=&quot;machine&quot;" />
 
     <ui:WixUI Id="DshBootInstallDir" InstallDirectory="APPLICATIONFOLDER" />
 
@@ -35,55 +36,32 @@
       <ComponentGroupRef Id="RuntimeComponents" />
       <ComponentRef Id="StartMenuShortcutUserComponent" />
       <ComponentRef Id="StartMenuShortcutMachineComponent" />
-      <ComponentRef Id="StartupShortcutUserComponent" />
-      <ComponentRef Id="StartupShortcutMachineComponent" />
+      <ComponentRef Id="RunAutostartUserComponent" />
+      <ComponentRef Id="RunAutostartMachineComponent" />
       <ComponentRef Id="MachinePathComponent" />
     </Feature>
 
     <DirectoryRef Id="ApplicationProgramsFolder">
       <Component Id="StartMenuShortcutUserComponent" Condition="NOT ALLUSERS">
         <Shortcut Id="StartMenuShortcutUser"
-                  Name="DeepSeek Harness"
+                  Name="DSH Boot"
                   Description="Start the DeepSeek Harness web service and open the web UI"
                   Target="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"
                   Arguments="-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[APPLICATIONFOLDER]scripts\dsh-boot-launch.ps1&quot; launch"
-                  WorkingDirectory="APPLICATIONFOLDER" />
+                  WorkingDirectory="APPLICATIONFOLDER"
+                  Icon="DshBootIcon" />
         <RegistryValue Root="HKCU" Key="Software\dsh-boot" Name="startMenuShortcutUser" Type="integer" Value="1" KeyPath="yes" />
       </Component>
       <Component Id="StartMenuShortcutMachineComponent" Condition="ALLUSERS">
         <Shortcut Id="StartMenuShortcutMachine"
-                  Name="DeepSeek Harness"
+                  Name="DSH Boot"
                   Description="Start the DeepSeek Harness web service and open the web UI"
                   Target="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"
                   Arguments="-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[APPLICATIONFOLDER]scripts\dsh-boot-launch.ps1&quot; launch"
-                  WorkingDirectory="APPLICATIONFOLDER" />
+                  WorkingDirectory="APPLICATIONFOLDER"
+                  Icon="DshBootIcon" />
         <RemoveFolder Id="RemoveApplicationProgramsFolder" On="uninstall" />
         <RegistryValue Root="HKLM" Key="Software\dsh-boot" Name="startMenuShortcutMachine" Type="integer" Value="1" KeyPath="yes" />
-      </Component>
-    </DirectoryRef>
-
-    <StandardDirectory Id="StartupFolder">
-      <Component Id="StartupShortcutUserComponent" Condition="NOT ALLUSERS">
-        <Shortcut Id="StartupShortcutUser"
-                  Name="dsh-boot"
-                  Description="Start the DeepSeek Harness web service at login"
-                  Target="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"
-                  Arguments="-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[APPLICATIONFOLDER]scripts\dsh-boot-launch.ps1&quot; start --no-browser"
-                  WorkingDirectory="APPLICATIONFOLDER" />
-        <RegistryValue Root="HKCU" Key="Software\dsh-boot" Name="startupShortcutUser" Type="integer" Value="1" KeyPath="yes" />
-      </Component>
-    </StandardDirectory>
-
-    <DirectoryRef Id="CommonStartupFolder">
-      <Component Id="StartupShortcutMachineComponent" Condition="ALLUSERS">
-        <Shortcut Id="StartupShortcutMachine"
-                  Name="dsh-boot"
-                  Description="Start the DeepSeek Harness web service at login"
-                  Target="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"
-                  Arguments="-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[APPLICATIONFOLDER]scripts\dsh-boot-launch.ps1&quot; start --no-browser"
-                  WorkingDirectory="APPLICATIONFOLDER" />
-        <RemoveFolder Id="RemoveCommonStartupFolder" On="uninstall" />
-        <RegistryValue Root="HKLM" Key="Software\dsh-boot" Name="startupShortcutMachine" Type="integer" Value="1" KeyPath="yes" />
       </Component>
     </DirectoryRef>
 
@@ -91,6 +69,22 @@
       <Component Id="MachinePathComponent" Condition="ALLUSERS">
         <Environment Id="MachinePath" Name="Path" Action="set" Part="last" System="yes" Value="[APPLICATIONFOLDER]bin" />
         <RegistryValue Root="HKMU" Key="Software\dsh-boot" Name="machinePath" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+      <Component Id="RunAutostartUserComponent" Condition="NOT ALLUSERS">
+        <RegistryValue Root="HKCU"
+                      Key="Software\Microsoft\Windows\CurrentVersion\Run"
+                      Name="DSH Boot"
+                      Type="string"
+                      Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[APPLICATIONFOLDER]scripts\dsh-boot-launch.ps1&quot; start --no-browser"
+                      KeyPath="yes" />
+      </Component>
+      <Component Id="RunAutostartMachineComponent" Condition="ALLUSERS">
+        <RegistryValue Root="HKLM"
+                      Key="Software\Microsoft\Windows\CurrentVersion\Run"
+                      Name="DSH Boot"
+                      Type="string"
+                      Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[APPLICATIONFOLDER]scripts\dsh-boot-launch.ps1&quot; start --no-browser"
+                      KeyPath="yes" />
       </Component>
     </DirectoryRef>
 
@@ -118,10 +112,7 @@
     </StandardDirectory>
 
     <StandardDirectory Id="ProgramMenuFolder">
-      <Directory Id="ApplicationProgramsFolder" Name="DeepSeek Harness" />
-      <!-- In a per-machine install ProgramMenuFolder resolves to the common
-           Start Menu, so Startup below is the all-users Startup folder. -->
-      <Directory Id="CommonStartupFolder" Name="Startup" />
+      <Directory Id="ApplicationProgramsFolder" Name="DSH Boot" />
     </StandardDirectory>
   </Package>
 
@@ -195,5 +186,9 @@
     </UI>
 
     <UIRef Id="WixUI_Common" />
+  </Fragment>
+
+  <Fragment>
+    <Icon Id="DshBootIcon" SourceFile="$(var.SourceDir)\dsh-boot.ico" />
   </Fragment>
 </Wix>

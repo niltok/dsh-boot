@@ -28,8 +28,8 @@ if ($WixTool -eq "") {
 
 # Resolve WixToolset.UI.wixext. Local builds can point DSH_BOOT_WIX_UI_EXT at
 # a checked-out DLL; CI downloads the nupkg from nuget.org.
-$UiExt = $env:DSH_BOOT_WIX_UI_EXT
-if ($UiExt -eq "" -or -not (Test-Path $UiExt)) {
+$UiExt = [string]$env:DSH_BOOT_WIX_UI_EXT
+if ([string]::IsNullOrEmpty($UiExt) -or -not (Test-Path $UiExt)) {
   $UiVersion = "4.0.6"
   $UiExtDir = Join-Path $Work "wixext-ui-$UiVersion"
   $UiExt = Join-Path $UiExtDir "wixext4\WixToolset.UI.wixext.dll"
