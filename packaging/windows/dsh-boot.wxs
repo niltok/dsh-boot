@@ -1,0 +1,199 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="dsh-boot"
+           Language="1033"
+           Version="$(var.Version)"
+           Manufacturer="dsh-boot contributors"
+           UpgradeCode="9e06d43b-3f51-4f9b-9e2c-8e24c7d7b1c4"
+           Scope="perUserOrMachine">
+    <SummaryInformation Description="Lightweight DeepSeek Harness (dsh) launcher" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of dsh-boot is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Property Id="ARPCOMMENTS" Value="One MSI, two scopes: per-user writes HKCU Environment, per-machine writes HKLM Environment." />
+    <Property Id="ARPNOREPAIR" Value="1" />
+    <Property Id="ApplicationFolderName" Value="dsh-boot" />
+    <Property Id="DSH_BOOT_SCOPE" Secure="yes" />
+    <Property Id="WixAppFolder" Value="WixPerMachineFolder" />
+    <WixVariable Id="WixUISupportPerUser" Value="1" />
+    <WixVariable Id="WixUISupportPerMachine" Value="1" />
+
+    <!-- Silent-install defaults: no elevation means current user, elevated means all users.
+         Conditions key off DSH_BOOT_SCOPE so the execute sequence cannot override the
+         choice made on the InstallScopeDlg. -->
+    <SetProperty Id="DSH_BOOT_SCOPE" Action="SetDefaultUserScope" Before="CostFinalize" Value="user" Condition="(NOT Privileged AND DSH_BOOT_SCOPE=&quot;&quot;) OR DSH_BOOT_SCOPE=&quot;user&quot;" />
+    <SetProperty Id="DSH_BOOT_SCOPE" Action="SetDefaultMachineScope" Before="CostFinalize" Value="machine" Condition="(Privileged AND DSH_BOOT_SCOPE=&quot;&quot;) OR DSH_BOOT_SCOPE=&quot;machine&quot;" />
+    <SetProperty Id="ALLUSERS" Action="SetDefaultAllUsersPerUser" Before="CostFinalize" Value="{}" Condition="(NOT Privileged AND DSH_BOOT_SCOPE=&quot;&quot;) OR DSH_BOOT_SCOPE=&quot;user&quot;" />
+    <SetProperty Id="ALLUSERS" Action="SetDefaultAllUsersMachine" Before="CostFinalize" Value="1" Condition="(Privileged AND DSH_BOOT_SCOPE=&quot;&quot;) OR DSH_BOOT_SCOPE=&quot;machine&quot;" />
+    <SetProperty Id="WixAppFolder" Action="SetDefaultWixAppFolderPerUser" Before="CostFinalize" Value="WixPerUserFolder" Condition="(NOT Privileged AND DSH_BOOT_SCOPE=&quot;&quot;) OR DSH_BOOT_SCOPE=&quot;user&quot;" />
+    <SetProperty Id="WixAppFolder" Action="SetDefaultWixAppFolderPerMachine" Before="CostFinalize" Value="WixPerMachineFolder" Condition="(Privileged AND DSH_BOOT_SCOPE=&quot;&quot;) OR DSH_BOOT_SCOPE=&quot;machine&quot;" />
+    <SetProperty Id="APPLICATIONFOLDER" Action="SetDefaultAppFolderPerUser" Before="CostFinalize" Value="[LocalAppDataFolder]Apps\[ApplicationFolderName]" Condition="(NOT Privileged AND DSH_BOOT_SCOPE=&quot;&quot;) OR DSH_BOOT_SCOPE=&quot;user&quot;" />
+    <SetProperty Id="APPLICATIONFOLDER" Action="SetDefaultAppFolderPerMachine" Before="CostFinalize" Value="[ProgramFiles64Folder][ApplicationFolderName]" Condition="(Privileged AND DSH_BOOT_SCOPE=&quot;&quot;) OR DSH_BOOT_SCOPE=&quot;machine&quot;" />
+
+    <ui:WixUI Id="DshBootInstallDir" InstallDirectory="APPLICATIONFOLDER" />
+
+    <Feature Id="MainFeature" Title="dsh-boot" Level="1">
+      <ComponentGroupRef Id="RuntimeComponents" />
+      <ComponentRef Id="StartMenuShortcutUserComponent" />
+      <ComponentRef Id="StartMenuShortcutMachineComponent" />
+      <ComponentRef Id="StartupShortcutUserComponent" />
+      <ComponentRef Id="StartupShortcutMachineComponent" />
+      <ComponentRef Id="MachinePathComponent" />
+    </Feature>
+
+    <DirectoryRef Id="ApplicationProgramsFolder">
+      <Component Id="StartMenuShortcutUserComponent" Condition="NOT ALLUSERS">
+        <Shortcut Id="StartMenuShortcutUser"
+                  Name="DeepSeek Harness"
+                  Description="Start the DeepSeek Harness web service and open the web UI"
+                  Target="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"
+                  Arguments="-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[APPLICATIONFOLDER]scripts\dsh-boot-launch.ps1&quot; launch"
+                  WorkingDirectory="APPLICATIONFOLDER" />
+        <RegistryValue Root="HKCU" Key="Software\dsh-boot" Name="startMenuShortcutUser" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+      <Component Id="StartMenuShortcutMachineComponent" Condition="ALLUSERS">
+        <Shortcut Id="StartMenuShortcutMachine"
+                  Name="DeepSeek Harness"
+                  Description="Start the DeepSeek Harness web service and open the web UI"
+                  Target="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"
+                  Arguments="-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[APPLICATIONFOLDER]scripts\dsh-boot-launch.ps1&quot; launch"
+                  WorkingDirectory="APPLICATIONFOLDER" />
+        <RemoveFolder Id="RemoveApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue Root="HKLM" Key="Software\dsh-boot" Name="startMenuShortcutMachine" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <StandardDirectory Id="StartupFolder">
+      <Component Id="StartupShortcutUserComponent" Condition="NOT ALLUSERS">
+        <Shortcut Id="StartupShortcutUser"
+                  Name="dsh-boot"
+                  Description="Start the DeepSeek Harness web service at login"
+                  Target="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"
+                  Arguments="-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[APPLICATIONFOLDER]scripts\dsh-boot-launch.ps1&quot; start --no-browser"
+                  WorkingDirectory="APPLICATIONFOLDER" />
+        <RegistryValue Root="HKCU" Key="Software\dsh-boot" Name="startupShortcutUser" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <DirectoryRef Id="CommonStartupFolder">
+      <Component Id="StartupShortcutMachineComponent" Condition="ALLUSERS">
+        <Shortcut Id="StartupShortcutMachine"
+                  Name="dsh-boot"
+                  Description="Start the DeepSeek Harness web service at login"
+                  Target="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"
+                  Arguments="-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[APPLICATIONFOLDER]scripts\dsh-boot-launch.ps1&quot; start --no-browser"
+                  WorkingDirectory="APPLICATIONFOLDER" />
+        <RemoveFolder Id="RemoveCommonStartupFolder" On="uninstall" />
+        <RegistryValue Root="HKLM" Key="Software\dsh-boot" Name="startupShortcutMachine" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="APPLICATIONFOLDER">
+      <Component Id="MachinePathComponent" Condition="ALLUSERS">
+        <Environment Id="MachinePath" Name="Path" Action="set" Part="last" System="yes" Value="[APPLICATIONFOLDER]bin" />
+        <RegistryValue Root="HKMU" Key="Software\dsh-boot" Name="machinePath" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <CustomAction Id="AddUserPath"
+                  Directory="APPLICATIONFOLDER"
+                  ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[APPLICATIONFOLDER]scripts\update-user-path.ps1&quot; add &quot;[APPLICATIONFOLDER]bin&quot;"
+                  Execute="immediate"
+                  Impersonate="yes"
+                  Return="check" />
+
+    <CustomAction Id="RemoveUserPath"
+                  Directory="APPLICATIONFOLDER"
+                  ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[APPLICATIONFOLDER]scripts\update-user-path.ps1&quot; remove &quot;[APPLICATIONFOLDER]bin&quot;"
+                  Execute="immediate"
+                  Impersonate="yes"
+                  Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="AddUserPath" After="InstallValidate" Condition="NOT Installed AND NOT ALLUSERS" />
+      <Custom Action="RemoveUserPath" After="InstallValidate" Condition="REMOVE=&quot;ALL&quot; AND NOT ALLUSERS" />
+    </InstallExecuteSequence>
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="APPLICATIONFOLDER" Name="dsh-boot" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="DeepSeek Harness" />
+      <!-- In a per-machine install ProgramMenuFolder resolves to the common
+           Start Menu, so Startup below is the all-users Startup folder. -->
+      <Directory Id="CommonStartupFolder" Name="Startup" />
+    </StandardDirectory>
+  </Package>
+
+  <Fragment>
+    <UI Id="DshBootInstallDir_X64">
+      <Publish Dialog="LicenseAgreementDlg" Control="Print" Event="DoAction" Value="WixUIPrintEula_X64" />
+      <Publish Dialog="BrowseDlg" Control="OK" Event="DoAction" Value="WixUIValidatePath_X64" Order="3" Condition="NOT WIXUI_DONTVALIDATEPATH" />
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="DoAction" Value="WixUIValidatePath_X64" Order="2" Condition="NOT WIXUI_DONTVALIDATEPATH" />
+    </UI>
+    <UIRef Id="DshBootInstallDir" />
+  </Fragment>
+
+  <Fragment>
+    <UI Id="file DshBootInstallDir">
+      <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
+      <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
+      <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
+
+      <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+
+      <DialogRef Id="BrowseDlg" />
+      <DialogRef Id="DiskCostDlg" />
+      <DialogRef Id="ErrorDlg" />
+      <DialogRef Id="FatalError" />
+      <DialogRef Id="FilesInUse" />
+      <DialogRef Id="MsiRMFilesInUse" />
+      <DialogRef Id="PrepareDlg" />
+      <DialogRef Id="ProgressDlg" />
+      <DialogRef Id="ResumeDlg" />
+      <DialogRef Id="UserExit" />
+
+      <Publish Dialog="BrowseDlg" Control="OK" Event="SpawnDialog" Value="InvalidDirDlg" Order="4" Condition="NOT WIXUI_DONTVALIDATEPATH AND WIXUI_INSTALLDIR_VALID&lt;&gt;&quot;1&quot;" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
+
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="LicenseAgreementDlg" Condition="NOT Installed" />
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Condition="Installed AND PATCH" />
+
+      <Publish Dialog="LicenseAgreementDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" />
+      <Publish Dialog="LicenseAgreementDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg" Order="1" Condition="LicenseAccepted = &quot;1&quot;" />
+      <Publish Dialog="LicenseAgreementDlg" Control="Next" Event="NewDialog" Value="InstallScopeDlg" Order="2" Condition="LicenseAccepted = &quot;1&quot; AND Privileged" />
+
+      <DialogRef Id="InstallScopeDlg" />
+
+      <Publish Dialog="InstallScopeDlg" Control="Back" Event="NewDialog" Value="LicenseAgreementDlg" />
+      <Publish Dialog="InstallScopeDlg" Control="Next" Property="ALLUSERS" Value="{}" Order="1" Condition="WixAppFolder=&quot;WixPerUserFolder&quot;" />
+      <Publish Dialog="InstallScopeDlg" Control="Next" Property="ALLUSERS" Value="1" Order="2" Condition="WixAppFolder=&quot;WixPerMachineFolder&quot;" />
+      <Publish Dialog="InstallScopeDlg" Control="Next" Property="DSH_BOOT_SCOPE" Value="user" Order="3" Condition="WixAppFolder=&quot;WixPerUserFolder&quot;" />
+      <Publish Dialog="InstallScopeDlg" Control="Next" Property="DSH_BOOT_SCOPE" Value="machine" Order="4" Condition="WixAppFolder=&quot;WixPerMachineFolder&quot;" />
+      <Publish Dialog="InstallScopeDlg" Control="Next" Property="APPLICATIONFOLDER" Value="[LocalAppDataFolder]Apps\[ApplicationFolderName]" Order="5" Condition="WixAppFolder=&quot;WixPerUserFolder&quot;" />
+      <Publish Dialog="InstallScopeDlg" Control="Next" Property="APPLICATIONFOLDER" Value="[ProgramFiles64Folder][ApplicationFolderName]" Order="6" Condition="WixAppFolder=&quot;WixPerMachineFolder&quot;" />
+      <Publish Dialog="InstallScopeDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg" Order="7" />
+
+      <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="LicenseAgreementDlg" Order="1" />
+      <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="InstallScopeDlg" Order="2" Condition="NOT Installed AND Privileged" />
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="SetTargetPath" Value="[WIXUI_INSTALLDIR]" Order="1" />
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="SpawnDialog" Value="InvalidDirDlg" Order="3" Condition="NOT WIXUI_DONTVALIDATEPATH AND WIXUI_INSTALLDIR_VALID&lt;&gt;&quot;1&quot;" />
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="4" Condition="WIXUI_DONTVALIDATEPATH OR WIXUI_INSTALLDIR_VALID=&quot;1&quot;" />
+      <Publish Dialog="InstallDirDlg" Control="ChangeFolder" Property="_BrowseProperty" Value="[WIXUI_INSTALLDIR]" Order="1" />
+      <Publish Dialog="InstallDirDlg" Control="ChangeFolder" Event="SpawnDialog" Value="BrowseDlg" Order="2" />
+
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="InstallDirDlg" Order="1" Condition="NOT Installed" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="2" Condition="Installed AND NOT PATCH" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2" Condition="Installed AND PATCH" />
+
+      <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg" />
+
+      <Property Id="ARPNOMODIFY" Value="1" />
+    </UI>
+
+    <UIRef Id="WixUI_Common" />
+  </Fragment>
+</Wix>

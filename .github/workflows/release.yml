@@ -54,11 +54,14 @@ jobs:
       - name: Bundle self-contained runtime
         run: node scripts/bundle-runtime.mjs ${{ matrix.target }}
 
-      - name: Install WiX toolset
+      - name: Install WiX v4 toolset
         if: runner.os == 'Windows'
-        run: choco install wixtoolset -y --no-progress
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 4.0.6
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      - name: Package Windows Installer (per-user and per-machine MSI)
+      - name: Package Windows Installer (dual-scope MSI)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |

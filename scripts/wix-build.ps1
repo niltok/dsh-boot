@@ -1,7 +1,8 @@
 param(
   [string]$RuntimeDir = "dist\runtime-win32-x64",
   [string]$OutDir = "dist",
-  [string]$Version = ""
+  [string]$Version = "",
+  [string]$WixTool = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,35 +16,41 @@ $OutDir = (Resolve-Path $OutDir).Path
 $Work = Join-Path $OutDir "wix-obj"
 New-Item -ItemType Directory -Force -Path $Work | Out-Null
 
-Write-Host "dsh-boot: harvesting $RuntimeDir"
-$Components = Join-Path $Work "runtime-components.wxs"
-& heat.exe dir $RuntimeDir -gg -g1 -cg RuntimeComponents -dr INSTALLDIR -srd -sreg -var var.SourceDir -out $Components
-if ($LASTEXITCODE -ne 0) { throw "heat.exe failed with exit code $LASTEXITCODE" }
-
-foreach ($Scope in @("per-user", "per-machine")) {
-  $Source = "packaging\windows\dsh-boot-$Scope.wxs"
-  $ProductObj = Join-Path $Work "Product-$Scope.wixobj"
-  $ComponentsObj = Join-Path $Work "Components-$Scope.wixobj"
-  $CandleOut = $Work.TrimEnd('\') + '\'
-  $SourceObj = Join-Path $Work ((Split-Path $Source -Leaf) -replace '\.wxs$', '.wixobj')
-  $RuntimeObj = Join-Path $Work "runtime-components.wixobj"
-
-  Write-Host "dsh-boot: compiling $Scope MSI"
-  & candle.exe -nologo -arch x64 "-dSourceDir=$RuntimeDir" "-dVersion=$Version" $Source $Components "-out" $CandleOut
-  if ($LASTEXITCODE -ne 0) { throw "candle.exe failed for $Scope with exit code $LASTEXITCODE" }
-
-  # Move the two objects aside so the next scope's compile cannot overwrite them.
-  Move-Item $SourceObj $ProductObj -Force
-  Move-Item $RuntimeObj $ComponentsObj -Force
-
-  $Msi = Join-Path $OutDir "dsh-boot-$Version-win32-x64-$Scope.msi"
-  Write-Host "dsh-boot: linking $Msi"
-  # -sval skips MSI ICE validation. ICE needs a fully functional Windows
-  # Installer service and non-interactive CI runners (and local sandboxes)
-  # are not a reliable host for it; heat/candle/link still catch source errors.
-  & light.exe -nologo -sval -b $RuntimeDir -out $Msi $ProductObj $ComponentsObj
-  if ($LASTEXITCODE -ne 0) { throw "light.exe failed for $Scope with exit code $LASTEXITCODE" }
-  Write-Host "dsh-boot: built $Msi"
+if ($WixTool -eq "") {
+  $WixTool = $env:DSH_BOOT_WIX
+}
+if ($WixTool -eq "") {
+  $WixTool = (Get-Command wix.exe -ErrorAction SilentlyContinue).Source
+}
+if ($WixTool -eq "") {
+  throw "WiX v4 (wix.exe) was not found. Install it with: dotnet tool install --global wix --version 4.0.6"
 }
 
-Write-Host "dsh-boot: Windows packages complete"
+# Resolve WixToolset.UI.wixext. Local builds can point DSH_BOOT_WIX_UI_EXT at
+# a checked-out DLL; CI downloads the nupkg from nuget.org.
+$UiExt = $env:DSH_BOOT_WIX_UI_EXT
+if ($UiExt -eq "" -or -not (Test-Path $UiExt)) {
+  $UiVersion = "4.0.6"
+  $UiExtDir = Join-Path $Work "wixext-ui-$UiVersion"
+  $UiExt = Join-Path $UiExtDir "wixext4\WixToolset.UI.wixext.dll"
+  if (-not (Test-Path $UiExt)) {
+    $UiNupkg = Join-Path $Work "WixToolset.UI.wixext.$UiVersion.nupkg"
+    Write-Host "dsh-boot: downloading WixToolset.UI.wixext $UiVersion"
+    Invoke-WebRequest -UseBasicParsing -Uri "https://api.nuget.org/v3-flatcontainer/wixtoolset.ui.wixext/$UiVersion/wixtoolset.ui.wixext.$UiVersion.nupkg" -OutFile $UiNupkg
+    New-Item -ItemType Directory -Force -Path $UiExtDir | Out-Null
+    & tar.exe -xf $UiNupkg -C $UiExtDir
+    if ($LASTEXITCODE -ne 0) { throw "failed to extract WixToolset.UI.wixext" }
+  }
+}
+
+$Components = Join-Path $Work "runtime-components.wxs"
+Write-Host "dsh-boot: generating v4 component manifest from $RuntimeDir"
+& node scripts\generate-wix-components.mjs $RuntimeDir $Components
+if ($LASTEXITCODE -ne 0) { throw "component manifest generation failed" }
+
+$Msi = Join-Path $OutDir "dsh-boot-$Version-win32-x64.msi"
+Write-Host "dsh-boot: building single dual-scope MSI -> $Msi"
+& $WixTool build packaging\windows\dsh-boot.wxs $Components -arch x64 -d Version=$Version -d SourceDir=$RuntimeDir -o $Msi -ext $UiExt
+if ($LASTEXITCODE -ne 0) { throw "wix build failed with exit code $LASTEXITCODE" }
+
+Write-Host "dsh-boot: built $Msi"

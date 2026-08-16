@@ -25,18 +25,18 @@
 
 ### Windows
 
-Release 提供两个 Windows Installer（MSI）：
+Release 提供一个 Windows Installer（MSI，WiX v4 双作用域）：
 
-- `dsh-boot-<version>-win32-x64-per-user.msi`
-  - 不需要管理员权限，安装到 `%LOCALAPPDATA%\Programs\dsh-boot`
-  - PATH 写入 **HKCU\Environment**（只影响当前用户）
-  - 自启动快捷方式写入当前用户的 Startup 文件夹
-- `dsh-boot-<version>-win32-x64-per-machine.msi`
-  - 需要管理员权限，安装到 `%ProgramFiles%\dsh-boot`
-  - PATH 写入 **HKLM\...\Session Manager\Environment**（影响所有用户）
-  - 自启动快捷方式写入公共 Startup 文件夹
+- `dsh-boot-<version>-win32-x64.msi`
+  - 打开后选择 **“仅为我安装”**：不需要管理员权限，安装到
+    `%LOCALAPPDATA%\Apps\dsh-boot`，PATH 写入 HKCU\Environment，
+    自启动快捷方式写入当前用户 Startup。
+  - 选择 **“为所有人安装”**：需要 UAC 管理员权限，安装到
+    `%PROGRAMFILES%\dsh-boot`，PATH 写入 HKLM Environment，
+    自启动快捷方式写入公共 Startup。
+  - 静默安装（`/qn`）按启动权限自动选择：未提权=当前用户，提权=所有用户。
 
-两个 MSI 都创建“开始菜单 → DeepSeek Harness”图标，双击等价于
+MSI 会创建“开始菜单 → DeepSeek Harness”图标，双击等价于
 `dsh-boot launch`。环境变量更新后需要重新打开终端或重新登录。
 
 ### macOS
@@ -180,8 +180,7 @@ DSH_VERSION=0.1.0-rc.6 NODE_VERSION=22.23.2 PNPM_VERSION=11.21.0 \
 
 GitHub Actions 在推送 `v*` tag 时自动产出：
 
-- `dsh-boot-<version>-win32-x64-per-user.msi`
-- `dsh-boot-<version>-win32-x64-per-machine.msi`
+- `dsh-boot-<version>-win32-x64.msi`
 - `dsh-boot-<version>-darwin-arm64.dmg` / `-x64.dmg`
 - `dsh-boot-<version>-darwin-{arm64,x64}.tar.gz`（Homebrew 用）
 - `dsh-boot-<version>-linux-x64.tar.gz`（Linux 因原生依赖不做交叉编译；有 ARM runner 时可在同一脚本上直接产出 arm64）
@@ -192,8 +191,8 @@ GitHub Actions 在推送 `v*` tag 时自动产出：
 - supervisor 控制端口只绑定 `127.0.0.1`，token 随机生成，状态文件权限 0600。
 - Web 重启路由无 CORS 头且要求自定义请求头，跨站请求无法通过 preflight。
 - dsh 默认只绑定 `127.0.0.1`；启动参数文件的 `--host` 仍受 dsh 自身限制。
-- 安装目录和 PATH 变更属于系统级动作：per-user MSI 只写 HKCU，per-machine MSI
-  需要 UAC 并写 HKLM，两者不会混用。
+- 安装目录和 PATH 变更属于系统级动作：当前用户作用域只写 HKCU，所有用户
+  作用域才写 HKLM，由同一个 MSI 根据 UI 选择或提权状态自动切换。
 
 ## License
 
