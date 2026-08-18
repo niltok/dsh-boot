@@ -75,7 +75,7 @@
                       Key="Software\Microsoft\Windows\CurrentVersion\Run"
                       Name="DSH Boot"
                       Type="string"
-                      Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[APPLICATIONFOLDER]scripts\dsh-boot-launch.ps1&quot; start --no-browser"
+                      Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[APPLICATIONFOLDER]scripts\dsh-boot-launch.ps1&quot; start"
                       KeyPath="yes" />
       </Component>
       <Component Id="RunAutostartMachineComponent" Condition="ALLUSERS">
@@ -83,7 +83,7 @@
                       Key="Software\Microsoft\Windows\CurrentVersion\Run"
                       Name="DSH Boot"
                       Type="string"
-                      Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[APPLICATIONFOLDER]scripts\dsh-boot-launch.ps1&quot; start --no-browser"
+                      Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[APPLICATIONFOLDER]scripts\dsh-boot-launch.ps1&quot; start"
                       KeyPath="yes" />
       </Component>
     </DirectoryRef>

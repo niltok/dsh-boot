@@ -28,38 +28,14 @@ if (targetOs !== process.platform || targetArch !== process.arch) {
 }
 
 const nodeOs = { win32: "win", darwin: "darwin", linux: "linux" }[targetOs];
-const ext = targetOs === "win32" ? "zip" : "tar.gz";
 const nodeBase = `node-v${NODE_VERSION}-${nodeOs}-${targetArch}`;
-const nodeUrl = `https://nodejs.org/dist/v${NODE_VERSION}/${nodeBase}.${ext}`;
 
 const outRoot = join(repoRoot, "dist", `runtime-${key}`);
-const archivePath = join(repoRoot, "dist", `${nodeBase}.${ext}`);
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { stdio: "inherit", ...options });
   if (result.error !== void 0) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
-}
-
-async function download(url, destination) {
-  mkdirSync(dirname(destination), { recursive: true });
-  if (existsSync(destination)) {
-    console.log(`dsh-boot: using cached ${destination}`);
-    return;
-  }
-  console.log(`dsh-boot: downloading ${url}`);
-  const response = await fetch(url, { redirect: "follow" });
-  if (!response.ok) throw new Error(`download failed (HTTP ${response.status}): ${url}`);
-  const bytes = Buffer.from(await response.arrayBuffer());
-  writeFileSync(destination, bytes);
-  console.log(`dsh-boot: downloaded ${destination} (${String(bytes.length)} bytes)`);
-}
-
-function extractNodeArchive() {
-  const nodeDir = join(outRoot, "node");
-  rmSync(nodeDir, { recursive: true, force: true });
-  mkdirSync(nodeDir, { recursive: true });
-  run("tar", ["-xf", archivePath, "-C", nodeDir, "--strip-components", "1"]);
 }
 
 function writeRuntimeManifest() {
@@ -74,95 +50,309 @@ function writeRuntimeManifest() {
       pnpm: PNPM_VERSION,
     },
   };
-  writeFileSync(join(outRoot, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  return `${JSON.stringify(manifest, null, 2)}\n`;
 }
 
-function installRuntime() {
-  // npm produces the flat, self-contained node_modules tree we want inside
-  // the packaged runtime (no pnpm virtual store reparse points for WiX to
-  // harvest twice). pnpm is still bundled as a dependency for `dsh plugin`.
-  //
-  // Do NOT pass --legacy-peer-deps here: dsh-app-boot imports
-  // @deepseek-ai/cordis-plugin-group, which is only declared as a peer
-  // dependency of dsh-app-boot. With legacy peer resolution npm skips that
-  // package and the installed dsh CLI dies at import time with
-  // ERR_MODULE_NOT_FOUND. Default npm behavior auto-installs the peer.
-  run("npm", ["install", "--omit=dev", "--no-audit", "--no-fund", "--no-package-lock"], {
-    cwd: outRoot,
-    shell: process.platform === "win32",
-    env: { ...process.env, npm_config_update_notifier: "false" },
-  });
+function writeBootstrapScripts() {
+  const scripts = join(outRoot, "scripts");
+  mkdirSync(scripts, { recursive: true });
+
+  if (targetOs === "win32") {
+    const ps1 = String.raw`param(
+      [string]$DistRoot,
+      [string]$RuntimeRoot = "$HOME\\.dsh-boot"
+    )
+$ErrorActionPreference = 'Stop'
+
+$NODE_VERSION = "${NODE_VERSION}"
+$DSH_VERSION = "${DSH_VERSION}"
+$PNPM_VERSION = "${PNPM_VERSION}"
+$DIST_VERSION = (Get-Content (Join-Path $DistRoot ".dsh-boot-install")).Trim()
+
+if (Test-Path (Join-Path $RuntimeRoot ".dsh-boot-install")) {
+    $installedVersion = (Get-Content (Join-Path $RuntimeRoot ".dsh-boot-install")).Trim()
+    if ($installedVersion -eq $DIST_VERSION) {
+        exit 0
+    }
 }
 
-/** Replace the npm `file:` symlink with a real plugin directory for MSI/DMG. */
-function materializeRestartPlugin() {
-  const pluginDir = join(outRoot, "node_modules", "@dsh-boot", "restart-plugin");
-  rmSync(pluginDir, { recursive: true, force: true });
-  mkdirSync(dirname(pluginDir), { recursive: true });
-  cpSync(join(outRoot, "vendor", "restart-plugin"), pluginDir, { recursive: true });
+Write-Host "dsh-boot: installing/updating runtime to $DIST_VERSION..."
+if (!(Test-Path $RuntimeRoot)) { New-Item -ItemType Directory -Path $RuntimeRoot -Force }
+
+# --- Parallel Mirror Selection ---
+$MIRRORS = @(
+    @{ Name = "Official"; Node = "https://nodejs.org/dist"; NPM = "https://registry.npmjs.org/" },
+    @{ Name = "npmmirror"; Node = "https://npmmirror.com/mirrors/node"; NPM = "https://registry.npmmirror.com/" },
+    @{ Name = "Huawei"; Node = "https://mirrors.huaweicloud.com/nodejs"; NPM = "https://repo.huaweicloud.com/repository/npm/" },
+    @{ Name = "Tencent"; Node = "https://mirrors.cloud.tencent.com/nodejs-release"; NPM = "https://mirrors.cloud.tencent.com/npm/" }
+)
+
+$selectedMirror = $null
+if ($env:DSH_BOOT_NODE_MIRROR) {
+    Write-Host "dsh-boot: using manual mirror override: $($env:DSH_BOOT_NODE_MIRROR)"
+    $selectedMirror = @{ Name = "Manual"; Node = $env:DSH_BOOT_NODE_MIRROR; NPM = $env:DSH_BOOT_NPM_REGISTRY }
+} else {
+    Write-Host "dsh-boot: testing mirrors in parallel..."
+    $jobs = @()
+    foreach ($m in $MIRRORS) {
+        $job = Start-Job -ScriptBlock {
+            param($m)
+            try {
+                $start = Get-Date
+                $req = [System.Net.Http.HttpClient]::new()
+                $req.Timeout = [System.TimeSpan]::FromSeconds(2)
+                $null = $req.GetStringAsync($m.Node).Result
+                $elapsed = ((Get-Date) - $start).TotalMilliseconds
+                return @{ Name = $m.Name; Node = $m.Node; NPM = $m.NPM; Time = $elapsed; Success = $true }
+            } catch {
+                return @{ Name = $m.Name; Success = $false }
+            }
+        } -ArgumentList $m
+        $jobs += $job
+    }
+
+    $results = $jobs | Wait-Job | Receive-Job
+    $jobs | Remove-Job
+
+    $minTime = [double]::MaxValue
+    foreach ($res in $results) {
+        if ($res.Success) {
+            Write-Host ("  {0}: {1}ms" -f $res.Name, [math]::Round($res.Time))
+            if ($res.Time -lt $minTime) {
+                $minTime = $res.Time
+                $selectedMirror = $res
+            }
+        } else {
+            Write-Host ("  {0}: timeout/error" -f $res.Name)
+        }
+    }
+    if ($null -eq $selectedMirror) { $selectedMirror = $MIRRORS[0] }
+    Write-Host "dsh-boot: selected fastest mirror: $($selectedMirror.Name)"
 }
 
-/** Add the bundled restart plugin to dsh's dependency closure. */
-function patchDshManifest() {
-  const dshManifest = join(outRoot, "node_modules", "@deepseek-ai", "dsh", "package.json");
-  if (!existsSync(dshManifest)) throw new Error(`dsh-boot: expected dsh at ${dshManifest}`);
-  const manifest = JSON.parse(readFileSync(dshManifest, "utf8"));
-  manifest.dependencies = {
-    ...(manifest.dependencies ?? {}),
-    "@dsh-boot/restart-plugin": version,
-  };
-  writeFileSync(dshManifest, `${JSON.stringify(manifest, null, 2)}\n`);
+$nodeBase = "${nodeBase}"
+$nodeUrl = "$($selectedMirror.Node)/v${NODE_VERSION}/$nodeBase.zip"
+$npmRegistry = if ($env:DSH_BOOT_NPM_REGISTRY) { $env:DSH_BOOT_NPM_REGISTRY } else { $selectedMirror.NPM }
+
+# --- Installation ---
+$nodeDir = Join-Path $RuntimeRoot "node"
+if (Test-Path $nodeDir) { Remove-Item -Recurse -Force $nodeDir }
+New-Item -ItemType Directory -Path $nodeDir -Force
+
+$archivePath = Join-Path $RuntimeRoot "node.zip"
+Write-Host "dsh-boot: downloading Node.js from $nodeUrl..."
+Invoke-WebRequest -Uri $nodeUrl -OutFile $archivePath
+
+Write-Host "dsh-boot: extracting Node.js..."
+Expand-Archive -Path $archivePath -DestinationPath $RuntimeRoot -Force
+$extractedDir = Get-ChildItem -Path $RuntimeRoot -Filter "node-v${NODE_VERSION}-win-${targetArch}*" | Select-Object -First 1
+Move-Item -Path $extractedDir.FullName -Destination $nodeDir -Force
+Remove-Item $archivePath -Force
+
+$nodeBin = Join-Path $nodeDir "node.exe"
+$npmCli = Join-Path $nodeDir "node_modules\\npm\\bin\\npm-cli.js"
+
+${writeRuntimeManifest()} | Set-Content -Path (Join-Path $RuntimeRoot "package.json")
+
+Write-Host "dsh-boot: configuring npm registry to $npmRegistry..."
+& $nodeBin $npmCli config set registry $npmRegistry
+
+Write-Host "dsh-boot: installing dependencies..."
+& $nodeBin $npmCli install --omit=dev --no-audit --no-fund --no-package-lock
+
+$cliDest = Join-Path $RuntimeRoot "lib\\dsh-boot"
+if (Test-Path $cliDest) { Remove-Item -Recurse -Force $cliDest }
+Copy-Item -Path (Join-Path $DistRoot "lib\\dsh-boot") -Destination $cliDest -Recurse -Force
+
+$pluginSrc = Join-Path $DistRoot "vendor\\restart-plugin"
+$pluginDest = Join-Path $RuntimeRoot "node_modules\\@dsh-boot\\restart-plugin"
+if (Test-Path $pluginDest) { Remove-Item -Recurse -Force $pluginDest }
+New-Item -ItemType Directory -Path (Split-Path $pluginDest) -Force
+Copy-Item -Path $pluginSrc -Destination $pluginDest -Recurse -Force
+
+$dshManifestPath = Join-Path $RuntimeRoot "node_modules\\@deepseek-ai\\dsh\\package.json"
+$dshManifest = Get-Content $dshManifestPath | ConvertFrom-Json
+$dshManifest.dependencies["@dsh-boot/restart-plugin"] = "${version}"
+$dshManifest | ConvertTo-Json | Set-Content $dshManifestPath
+
+Set-Content -Path (Join-Path $RuntimeRoot ".dsh-boot-install") -Value $DIST_VERSION
+Write-Host "dsh-boot: installation complete"
+`;
+    writeFileSync(join(scripts, "bootstrap.ps1"), ps1);
+  } else {
+    const sh = String.raw`#!/bin/sh
+set -eu
+DIST_ROOT="$1"
+RUNTIME_ROOT="${2:-$HOME/.dsh-boot}"
+
+NODE_VERSION="${NODE_VERSION}"
+DSH_VERSION="${DSH_VERSION}"
+PNPM_VERSION="${PNPM_VERSION}"
+DIST_VERSION=$(cat "$DIST_ROOT/.dsh-boot-install" | tr -d '\\r\\n')
+
+if [ -f "$RUNTIME_ROOT/.dsh-boot-install" ]; then
+    INSTALLED_VERSION=$(cat "$RUNTIME_ROOT/.dsh-boot-install" | tr -d '\\r\\n')
+    if [ "$INSTALLED_VERSION" = "$DIST_VERSION" ]; then
+        exit 0
+    fi
+fi
+
+echo "dsh-boot: installing/updating runtime to $DIST_VERSION..."
+mkdir -p "$RUNTIME_ROOT"
+
+# --- Parallel Mirror Selection ---
+MIRRORS="
+Official|https://nodejs.org/dist|https://registry.npmjs.org/
+npmmirror|https://npmmirror.com/mirrors/node|https://registry.npmmirror.com/
+Huawei|https://mirrors.huaweicloud.com/nodejs|https://repo.huaweicloud.com/repository/npm/
+Tencent|https://mirrors.cloud.tencent.com/nodejs-release|https://mirrors.cloud.tencent.com/npm/
+"
+
+selected_node_mirror=""
+selected_npm_registry=""
+
+if [ -n "\${DSH_BOOT_NODE_MIRROR:-}" ]; then
+    echo "dsh-boot: using manual mirror override: \${DSH_BOOT_NODE_MIRROR}"
+    selected_node_mirror="\${DSH_BOOT_NODE_MIRROR}"
+    selected_npm_registry="\${DSH_BOOT_NPM_REGISTRY:-}"
+else
+    echo "dsh-boot: testing mirrors in parallel..."
+    TMP_DIR=$(mktemp -d)
+    for m in $MIRRORS; do
+        [ -z "$m" ] && continue
+        (
+            name=$(echo "$m" | cut -d'|' -f1)
+            node_url=$(echo "$m" | cut -d'|' -f2)
+            npm_url=$(echo "$m" | cut -d'|' -f3)
+            
+            start=$(date +%s%3N)
+            if curl -sL --max-time 2 "$node_url" > /dev/null; then
+                end=$(date +%s%3N)
+                elapsed=$((end - start))
+                echo "$elapsed|$name|$node_url|$npm_url" > "$TMP_DIR/$name"
+            else
+                echo "9999|$name||" > "$TMP_DIR/$name"
+            fi
+        ) &
+    done
+    wait
+
+    min_time=9999
+    for res_file in "$TMP_DIR"/*; do
+        [ -e "$res_file" ] || continue
+        res=$(cat "$res_file")
+        time=$(echo "$res" | cut -d'|' -f1)
+        name=$(echo "$res" | cut -d'|' -f2)
+        node_url=$(echo "$res" | cut -d'|' -f3)
+        npm_url=$(echo "$res" | cut -d'|' -f4)
+
+        if [ "$time" -lt 9999 ]; then
+            echo "  $name: ${time}ms"
+            if [ "$time" -lt "$min_time" ]; then
+                min_time=$time
+                selected_node_mirror="$node_url"
+                selected_npm_registry="$npm_url"
+            fi
+        else
+            echo "  $name: timeout/error"
+        fi
+    done
+    rm -rf "$TMP_DIR"
+
+    if [ -z "$selected_node_mirror" ]; then
+        selected_node_mirror="https://nodejs.org/dist"
+        selected_npm_registry="https://registry.npmjs.org/"
+    fi
+    echo "dsh-boot: selected fastest mirror"
+fi
+
+npm_registry="\${DSH_BOOT_NPM_REGISTRY:-$selected_npm_registry}"
+
+# --- Installation ---
+NODE_DIR="$RUNTIME_ROOT/node"
+rm -rf "$NODE_DIR"
+mkdir -p "$NODE_DIR"
+
+node_base="${nodeBase}"
+node_url="$selected_node_mirror/v${NODE_VERSION}/$node_base.tar.gz"
+
+echo "dsh-boot: downloading Node.js from $node_url..."
+curl -L "$node_url" -o "$RUNTIME_ROOT/node.tar.gz"
+
+echo "dsh-boot: extracting Node.js..."
+tar -xzf "$RUNTIME_ROOT/node.tar.gz" -C "$NODE_DIR" --strip-components 1
+rm "$RUNTIME_ROOT/node.tar.gz"
+
+NODE_BIN="$NODE_DIR/bin/node"
+NPM_CLI="$NODE_DIR/lib/node_modules/npm/bin/npm-cli.js"
+
+cat <<EOF > "$RUNTIME_ROOT/package.json"
+${writeRuntimeManifest()}
+EOF
+
+echo "dsh-boot: configuring npm registry to $npm_registry..."
+"$NODE_BIN" "$NPM_CLI" config set registry "$npm_registry"
+
+echo "dsh-boot: installing dependencies..."
+"$NODE_BIN" "$NPM_CLI" install --omit=dev --no-audit --no-fund --no-package-lock
+
+CLI_DEST="$RUNTIME_ROOT/lib/dsh-boot"
+rm -rf "$CLI_DEST"
+cp -r "$DIST_ROOT/lib/dsh-boot" "$CLI_DEST"
+
+PLUGIN_SRC="$DIST_ROOT/vendor/restart-plugin"
+PLUGIN_DEST="$RUNTIME_ROOT/node_modules/@dsh-boot/restart-plugin"
+rm -rf "$PLUGIN_DEST"
+mkdir -p "$(dirname "$PLUGIN_DEST")"
+cp -r "$PLUGIN_SRC" "$PLUGIN_DEST"
+
+DSH_MANIFEST="$RUNTIME_ROOT/node_modules/@deepseek-ai/dsh/package.json"
+"$NODE_BIN" -e "
+const fs = require('fs');
+const m = JSON.parse(fs.readFileSync('$DSH_MANIFEST', 'utf8'));
+m.dependencies['@dsh-boot/restart-plugin'] = '${version}';
+fs.writeFileSync('$DSH_MANIFEST', JSON.stringify(m, null, 2));
+"
+
+echo "$DIST_VERSION" > "$RUNTIME_ROOT/.dsh-boot-install"
+echo "dsh-boot: installation complete"
+`;
+    writeFileSync(join(scripts, "bootstrap.sh"), sh);
+    chmodSync(join(scripts, "bootstrap.sh"), 0o755);
+  }
 }
 
 function writeWindowsWrappers() {
   const bin = join(outRoot, "bin");
   mkdirSync(bin, { recursive: true });
-  writeFileSync(join(bin, "dsh-boot.cmd"), `@echo off\r\nsetlocal\r\nfor %%I in ("%~dp0..") do set "DSH_BOOT_ROOT=%%~fI"\r\nset "PATH=%~dp0;%PATH%"\r\n"%DSH_BOOT_ROOT%\\node\\node.exe" "%DSH_BOOT_ROOT%\\lib\\dsh-boot\\bin.js" %*\r\nexit /b %ERRORLEVEL%\r\n`);
-  writeFileSync(join(bin, "dsh.cmd"), `@echo off\r\nsetlocal\r\nfor %%I in ("%~dp0..") do set "DSH_BOOT_ROOT=%%~fI"\r\nset "PATH=%~dp0;%PATH%"\r\n"%DSH_BOOT_ROOT%\\node\\node.exe" "%DSH_BOOT_ROOT%\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js" %*\r\nexit /b %ERRORLEVEL%\r\n`);
-  writeFileSync(join(bin, "pnpm.cmd"), `@echo off\r\nsetlocal\r\nfor %%I in ("%~dp0..") do set "DSH_BOOT_ROOT=%%~fI"\r\n"%DSH_BOOT_ROOT%\\node\\node.exe" "%DSH_BOOT_ROOT%\\node_modules\\pnpm\\bin\\pnpm.cjs" %*\r\nexit /b %ERRORLEVEL%\r\n`);
+  
+  const bootCmd = `powershell -ExecutionPolicy Bypass -File "%DSH_BOOT_ROOT%\\scripts\\bootstrap.ps1" -DistRoot "%DSH_BOOT_ROOT%" -RuntimeRoot "%RUNTIME_ROOT%"`;
+  
+  writeFileSync(join(bin, "dsh-boot.cmd"), `@echo off\r\nsetlocal\r\nfor %%I in ("%~dp0..") do set "DSH_BOOT_ROOT=%%~fI"\r\nset "RUNTIME_ROOT=%USERPROFILE%\\.dsh-boot"\r\n${bootCmd}\r\nset "PATH=%RUNTIME_ROOT%\\node;%PATH%"\r\n"%RUNTIME_ROOT%\\node\\node.exe" "%RUNTIME_ROOT%\\lib\\dsh-boot\\bin.js" %*\r\nexit /b %ERRORLEVEL%\r\n`);
+  writeFileSync(join(bin, "dsh.cmd"), `@echo off\r\nsetlocal\r\nfor %%I in ("%~dp0..") do set "DSH_BOOT_ROOT=%%~fI"\r\nset "RUNTIME_ROOT=%USERPROFILE%\\.dsh-boot"\r\n${bootCmd}\r\nset "PATH=%RUNTIME_ROOT%\\node;%PATH%"\r\n"%RUNTIME_ROOT%\\node\\node.exe" "%RUNTIME_ROOT%\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js" %*\r\nexit /b %ERRORLEVEL%\r\n`);
+  writeFileSync(join(bin, "pnpm.cmd"), `@echo off\r\nsetlocal\r\nfor %%I in ("%~dp0..") do set "DSH_BOOT_ROOT=%%~fI"\r\nset "RUNTIME_ROOT=%USERPROFILE%\\.dsh-boot"\r\n${bootCmd}\r\n"%RUNTIME_ROOT%\\node\\node.exe" "%RUNTIME_ROOT%\\node_modules\\pnpm\\bin\\pnpm.cjs" %*\r\nexit /b %ERRORLEVEL%\r\n`);
 
   const scripts = join(outRoot, "scripts");
   mkdirSync(scripts, { recursive: true });
-  writeFileSync(join(scripts, "dsh-boot-launch.ps1"), `param([string]$Action = 'launch')\r\n$ErrorActionPreference = 'Stop'\r\n$root = Split-Path -Parent $PSScriptRoot\r\n$node = Join-Path $root 'node\\node.exe'\r\n$cli = Join-Path $root 'lib\\dsh-boot\\bin.js'\r\n& $node $cli $Action @args\r\nexit $LASTEXITCODE\r\n`);
+  writeFileSync(join(scripts, "dsh-boot-launch.ps1"), `param([string]$Action = 'launch')\r\n$ErrorActionPreference = 'Stop'\r\n$root = Split-Path -Parent $PSScriptRoot\r\n$runtimeRoot = "$HOME\\.dsh-boot"\r\n$node = Join-Path $runtimeRoot 'node\\node.exe'\r\n$cli = Join-Path $runtimeRoot 'lib\\dsh-boot\\bin.js'\r\n& $node $cli $Action @args\r\nexit $LASTEXITCODE\r\n`);
   writeFileSync(join(scripts, "update-user-path.ps1"), UPDATE_USER_PATH_PS1);
 }
 
 function writeUnixWrappers() {
   const bin = join(outRoot, "bin");
   mkdirSync(bin, { recursive: true });
-  const common = `#!/bin/sh\nset -eu\nSELF="$0"\nwhile [ -L "$SELF" ]; do\n  LINK=$(readlink "$SELF")\n  case "$LINK" in\n    /*) SELF="$LINK" ;;\n    *) SELF="$(dirname "$SELF")/$LINK" ;;\n  esac\ndone\nROOT=$(CDPATH= cd "$(dirname "$SELF")/.." && pwd)\nexport PATH="$ROOT/bin:$PATH"\n`;
-  writeFileSync(join(bin, "dsh-boot"), `${common}exec "$ROOT/node/bin/node" "$ROOT/lib/dsh-boot/bin.js" "$@"\n`, { mode: 0o755 });
-  writeFileSync(join(bin, "dsh"), `${common}exec "$ROOT/node/bin/node" "$ROOT/node_modules/@deepseek-ai/dsh/lib/bin.js" "$@"\n`, { mode: 0o755 });
-  writeFileSync(join(bin, "pnpm"), `${common}exec "$ROOT/node/bin/node" "$ROOT/node_modules/pnpm/bin/pnpm.cjs" "$@"\n`, { mode: 0o755 });
+  const common = `#!/bin/sh\nset -eu\nSELF="$0"\nwhile [ -L "$SELF" ]; do\n  LINK=$(readlink "$SELF")\n  case "$LINK" in\n    /*) SELF="$LINK" ;;\n    *) SELF="$(dirname "$SELF")/ $LINK" ;;\n  esac\ndone\nROOT=$(CDPATH= cd "$(dirname "$SELF")/.." && pwd)\nexport PATH="$ROOT/bin:$PATH"\nRUNTIME_ROOT="$HOME/.dsh-boot"\n"$ROOT/scripts/bootstrap.sh" "$ROOT" "$RUNTIME_ROOT"\n`;
+  writeFileSync(join(bin, "dsh-boot"), `${common}exec "$RUNTIME_ROOT/node/bin/node" "$RUNTIME_ROOT/lib/dsh-boot/bin.js" "$@"\n`, { mode: 0o755 });
+  writeFileSync(join(bin, "dsh"), `${common}exec "$RUNTIME_ROOT/node/bin/node" "$RUNTIME_ROOT/node_modules/@deepseek-ai/dsh/lib/bin.js" "$@"\n`, { mode: 0o755 });
+  writeFileSync(join(bin, "pnpm"), `${common}exec "$RUNTIME_ROOT/node/bin/node" "$RUNTIME_ROOT/node_modules/pnpm/bin/pnpm.cjs" "$@"\n`, { mode: 0o755 });
   chmodSync(join(bin, "dsh-boot"), 0o755);
   chmodSync(join(bin, "dsh"), 0o755);
   chmodSync(join(bin, "pnpm"), 0o755);
 }
 
-function verifyRuntime() {
-  const node = targetOs === "win32" ? join(outRoot, "node", "node.exe") : join(outRoot, "node", "bin", "node");
-  const dsh = join(outRoot, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js");
-  const plugin = join(outRoot, "node_modules", "@dsh-boot", "restart-plugin", "package.json");
-  for (const file of [node, dsh, plugin]) {
-    if (!existsSync(file)) throw new Error(`dsh-boot: bundled runtime is missing ${file}`);
-  }
-
-  // `--version` is enough to import dsh's boot graph, including
-  // dsh-app-boot. A missing peer dependency (for example
-  // @deepseek-ai/cordis-plugin-group) fails here at build time instead of
-  // making every installed Start Menu shortcut flash and exit.
-  // stdio: "inherit" keeps the smoke test usable in constrained build
-  // environments where pipe-based child stdio is not available.
-  const smoke = spawnSync(node, [dsh, "--version"], { stdio: "inherit", timeout: 120_000 });
-  if (smoke.error !== void 0) throw smoke.error;
-  if (smoke.status !== 0) throw new Error(`dsh-boot: bundled dsh smoke test failed (exit ${smoke.status ?? "signal"})`);
-}
-
 async function main() {
   rmSync(outRoot, { recursive: true, force: true });
   mkdirSync(outRoot, { recursive: true });
-  await download(nodeUrl, archivePath);
-  extractNodeArchive();
 
   cpSync(join(repoRoot, "packages", "cli", "src"), join(outRoot, "lib", "dsh-boot"), { recursive: true });
   cpSync(join(repoRoot, "packages", "restart-plugin"), join(outRoot, "vendor", "restart-plugin"), { recursive: true });
@@ -172,10 +362,7 @@ async function main() {
   pluginManifest.version = version;
   writeFileSync(pluginManifestPath, `${JSON.stringify(pluginManifest, null, 2)}\n`);
 
-  writeRuntimeManifest();
-  installRuntime();
-  materializeRestartPlugin();
-  patchDshManifest();
+  writeBootstrapScripts();
 
   writeFileSync(join(outRoot, ".dsh-boot-install"), `dsh-boot ${version}\n`);
   if (targetOs === "win32") writeWindowsWrappers();
@@ -186,8 +373,7 @@ async function main() {
     cpSync(iconSource, join(outRoot, "dsh-boot.ico"));
   }
 
-  verifyRuntime();
-  console.log(`dsh-boot: runtime ready at ${outRoot}`);
+  console.log(`dsh-boot: runtime bundle ready at ${outRoot}`);
   console.log(`dsh-boot: dsh ${DSH_VERSION}, pnpm ${PNPM_VERSION}, node ${NODE_VERSION}, plugin ${version}`);
 }
 

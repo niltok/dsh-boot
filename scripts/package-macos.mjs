@@ -32,6 +32,20 @@ mkdirSync(resources, { recursive: true });
 console.log(`dsh-boot: copying ${runtimeDir} into ${app}`);
 cpSync(runtimeDir, resources, { recursive: true, dereference: false });
 
+// --- App Icon ---
+// macOS shows the .app icon only when a .icns file sits in Contents/Resources
+// and Info.plist declares it via CFBundleIconFile. The repo keeps the icon at
+// packaging/macos/dsh-boot.icns; when absent, the build degrades gracefully
+// (default generic icon) instead of failing.
+const iconSrc = join(repoRoot, "packaging", "macos", "dsh-boot.icns");
+const iconDest = join(resources, "AppIcon.icns");
+if (existsSync(iconSrc)) {
+  console.log(`dsh-boot: copying icon ${iconSrc} -> ${iconDest}`);
+  cpSync(iconSrc, iconDest);
+} else {
+  console.warn("dsh-boot: no icon at packaging/macos/dsh-boot.icns; .app will use the default generic icon");
+}
+
 const launcher = join(macos, "dsh-boot-launcher");
 writeFileSync(launcher, `#!/bin/bash
 set -eu
@@ -76,6 +90,7 @@ writeFileSync(join(contents, "Info.plist"), `<?xml version="1.0" encoding="UTF-8
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${version}</string>
   <key>CFBundleVersion</key><string>${version}</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>

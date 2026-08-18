@@ -23,7 +23,8 @@ const HELP = `dsh-boot ${paths.version} — lightweight DeepSeek Harness (dsh) l
 
 Usage:
   dsh-boot launch                    ensure dsh is running, then open the web UI
-  dsh-boot start [--foreground]      start dsh as a background service
+  dsh-boot start [--foreground] [--no-browser]
+                                     start dsh as a background service (never opens a browser)
   dsh-boot stop                      stop dsh and its supervisor
   dsh-boot restart                   restart dsh
   dsh-boot status [--json]           show service status
@@ -76,6 +77,7 @@ async function main() {
       const rest = [];
       for (const argument of args) {
         if (argument === "--foreground") foreground = true;
+        else if (argument === "--no-browser") continue; // Accepted for autostart compatibility; start never opens a browser.
         else rest.push(argument);
       }
       if (rest.length > 0) fail(`unknown start option: ${rest.join(" ")}`);

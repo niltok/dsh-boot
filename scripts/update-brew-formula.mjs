@@ -27,16 +27,13 @@ async function sha256Of(url, filename) {
 }
 
 const armFile = `dsh-boot-${version}-darwin-arm64.tar.gz`;
-const x64File = `dsh-boot-${version}-darwin-x64.tar.gz`;
 const armUrl = `https://github.com/${owner}/releases/download/v${version}/${armFile}`;
-const x64Url = `https://github.com/${owner}/releases/download/v${version}/${x64File}`;
-const [armSha, x64Sha] = await Promise.all([sha256Of(armUrl, armFile), sha256Of(x64Url, x64File)]);
+const armSha = await sha256Of(armUrl, armFile);
 
 let formula = readFileSync(formulaPath, "utf8");
 formula = formula.replaceAll("YOUR_GITHUB_OWNER", owner);
 formula = formula.replace(/version "[\d.]+"/, `version "${version}"`);
 formula = formula.replace("REPLACE_WITH_ARM64_SHA256", armSha);
-formula = formula.replace("REPLACE_WITH_X64_SHA256", x64Sha);
 writeFileSync(formulaPath, formula);
 
 console.log(`dsh-boot: updated ${formulaPath} for ${owner} v${version}`);

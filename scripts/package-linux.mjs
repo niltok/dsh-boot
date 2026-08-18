@@ -28,6 +28,15 @@ mkdirSync(packageRoot, { recursive: true });
 console.log(`dsh-boot: copying ${runtimeDir} into ${packageRoot}`);
 cpSync(runtimeDir, packageRoot, { recursive: true, dereference: false });
 
+// Linux app icon: ship the 512px PNG next to the runtime; install.sh places it
+// in the hicolor theme and points the .desktop entry at it.
+const linuxIcon = join(repoRoot, "packaging", "linux", "dsh-boot.png");
+if (existsSync(linuxIcon)) {
+  cpSync(linuxIcon, join(packageRoot, "dsh-boot.png"));
+} else {
+  console.warn("dsh-boot: no icon at packaging/linux/dsh-boot.png; desktop entry will have no icon");
+}
+
 const installSh = `#!/bin/sh
 # dsh-boot __VERSION__ portable Linux installer.
 # Deliberately package-manager agnostic: Linux has many package ecosystems,
@@ -91,19 +100,26 @@ done
 
 if [ "$SYSTEM" -eq 1 ]; then
   APPS="/usr/local/share/applications"
+  ICONS="/usr/local/share/icons"
 else
   APPS="\${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+  ICONS="\${XDG_DATA_HOME:-$HOME/.local/share}/icons"
 fi
-mkdir -p "$APPS"
+mkdir -p "$APPS" "$ICONS/hicolor/512x512/apps"
+cp "$PREFIX/dsh-boot.png" "$ICONS/hicolor/512x512/apps/dsh-boot.png"
 cat > "$APPS/dsh-boot.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=DeepSeek Harness
 Comment=Start the DeepSeek Harness web service and open the web UI
 Exec="$PREFIX/bin/dsh-boot" launch
+Icon=dsh-boot
 Terminal=false
 Categories=Development;Network;
 EOF
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache "$ICONS/hicolor" >/dev/null 2>&1 || true
+fi
 
 if [ "$AUTOSTART" -eq 1 ]; then
   if [ "$SYSTEM" -eq 0 ]; then
@@ -124,6 +140,7 @@ echo "  dsh      : $BINDIR/dsh"
 echo "  pnpm     : $BINDIR/pnpm"
 echo "  config   : ~/.dsh/dsh-boot/startup.args"
 echo "  desktop  : $APPS/dsh-boot.desktop"
+echo "  icon     : $ICONS/hicolor/512x512/apps/dsh-boot.png"
 echo
 echo "Next: run 'dsh-boot launch' (or the desktop icon) to start and open dsh."
 `;
@@ -139,9 +156,11 @@ PREFIX="$SRC"
 if [ "$(id -u)" -eq 0 ]; then
   BINDIR="/usr/local/bin"
   APPS="/usr/local/share/applications"
+  ICONS="/usr/local/share/icons"
 else
   BINDIR="\${HOME}/.local/bin"
   APPS="\${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+  ICONS="\${XDG_DATA_HOME:-$HOME/.local/share}/icons"
 fi
 
 "$PREFIX/bin/dsh-boot" autostart disable 2>/dev/null || true
@@ -151,6 +170,10 @@ for name in dsh-boot dsh pnpm; do
   fi
 done
 rm -f "$APPS/dsh-boot.desktop"
+rm -f "$ICONS/hicolor/512x512/apps/dsh-boot.png"
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache "$ICONS/hicolor" >/dev/null 2>&1 || true
+fi
 echo "dsh-boot: stopping service if it is running"
 "$PREFIX/bin/dsh-boot" stop 2>/dev/null || true
 echo "dsh-boot: removing $PREFIX"

@@ -16,7 +16,7 @@
 | 入口 | 行为 |
 | --- | --- |
 | 开始菜单 / 启动台图标 | 已运行则跳过启动，直接打开 Web UI；未运行则启动后打开 |
-| 开机自启 | Windows Startup 快捷方式 / macOS LaunchAgent / Linux systemd user service 或 XDG autostart |
+| 开机自启 | Windows 登录 Run 启动项 / macOS LaunchAgent / Linux systemd user service 或 XDG autostart |
 | Web UI 重启 | 设置 → 通用设置 底部的“重启服务”按钮（不放在设置面板顶部，也不单独占一个设置分区） |
 | `dsh` 命令 | 安装时写入 PATH，指向内置的 Node + dsh，用户可直接执行 `dsh web`、`dsh plugin ...` |
 | 启动参数文件 | `~/.dsh/dsh-boot/startup.args`，开机自启、图标启动、Web UI 重启三条路径共用 |
@@ -30,13 +30,13 @@ Release 提供一个 Windows Installer（MSI，WiX v4 双作用域）：
 - `dsh-boot-<version>-win32-x64.msi`
   - 打开后选择 **“仅为我安装”**：不需要管理员权限，安装到
     `%LOCALAPPDATA%\Apps\dsh-boot`，PATH 写入 HKCU\Environment，
-    自启动快捷方式写入当前用户 Startup。
+    自启动 Run 启动项写入当前用户。
   - 选择 **“为所有人安装”**：需要 UAC 管理员权限，安装到
     `%PROGRAMFILES%\dsh-boot`，PATH 写入 HKLM Environment，
-    自启动快捷方式写入公共 Startup。
+    自启动 Run 启动项写入公共（所有用户）。
   - 静默安装（`/qn`）按启动权限自动选择：未提权=当前用户，提权=所有用户。
 
-MSI 会创建“开始菜单 → DeepSeek Harness”图标，双击等价于
+MSI 会创建“开始菜单 → DSH Boot”图标，双击等价于
 `dsh-boot launch`。环境变量更新后需要重新打开终端或重新登录。
 
 ### macOS
@@ -79,7 +79,7 @@ dsh-boot stop            # 停止
 dsh-boot restart         # 重启
 dsh-boot status          # 状态；--json 输出机器可读状态
 dsh-boot open            # 只打开浏览器
-dsh-boot autostart enable|disable|status   # Windows 管理当前用户 Startup；加 --system 管理公共 Startup（需管理员）
+dsh-boot autostart enable|disable|status   # Windows 管理当前用户 Run 启动项；加 --system 管理公共 Run 启动项（需管理员）
 dsh-boot args            # 查看当前生效的启动参数
 dsh-boot doctor          # 检查内置运行时
 ```
@@ -181,8 +181,8 @@ DSH_VERSION=0.1.0-rc.6 NODE_VERSION=22.23.2 PNPM_VERSION=11.21.0 \
 GitHub Actions 在推送 `v*` tag 时自动产出：
 
 - `dsh-boot-<version>-win32-x64.msi`
-- `dsh-boot-<version>-darwin-arm64.dmg` / `-x64.dmg`
-- `dsh-boot-<version>-darwin-{arm64,x64}.tar.gz`（Homebrew 用）
+- `dsh-boot-<version>-darwin-arm64.dmg`
+- `dsh-boot-<version>-darwin-arm64.tar.gz`（Homebrew 用）
 - `dsh-boot-<version>-linux-x64.tar.gz`（Linux 因原生依赖不做交叉编译；有 ARM runner 时可在同一脚本上直接产出 arm64）
 - `SHA256SUMS`
 

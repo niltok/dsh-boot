@@ -1,11 +1,12 @@
 {
   "name": "dsh-boot",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Lightweight lifecycle launcher for the DeepSeek Harness (dsh) web server",
   "type": "module",
   "scripts": {
     "test": "node --test packages/cli/test/*.test.js",
+    "icon": "node scripts/generate-icon.mjs",
     "bundle": "node scripts/bundle-runtime.mjs",
     "package:linux": "node scripts/package-linux.mjs",
     "package:macos": "node scripts/package-macos.mjs",

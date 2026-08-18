@@ -45,7 +45,7 @@ $lnk = Join-Path $dir 'DSH Boot.lnk'
 $oldLnk = Join-Path $dir 'dsh-boot.lnk'
 $name = 'DSH Boot'
 $target = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-$value = '"' + $target + '" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $launch + '" start --no-browser'
+$value = '"' + $target + '" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $launch + '" start'
 if ($action -eq 'enable') {
   New-Item -Path $runKey -Force | Out-Null
   Set-ItemProperty -Path $runKey -Name $name -Value $value -Type String
@@ -192,7 +192,7 @@ function linuxDesktopAutostart() {
 Type=Application
 Name=dsh-boot
 Comment=Start the DeepSeek Harness web service at login
-Exec=${systemdQuote(paths.nodeBin)} ${systemdQuote(paths.cliEntry)} start --no-browser
+Exec=${systemdQuote(paths.nodeBin)} ${systemdQuote(paths.cliEntry)} start
 Terminal=false
 X-GNOME-Autostart-enabled=true
 `;

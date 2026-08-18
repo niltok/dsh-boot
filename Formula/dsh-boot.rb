@@ -15,11 +15,6 @@ class DshBoot < Formula
     sha256 "REPLACE_WITH_ARM64_SHA256"
   end
 
-  on_intel do
-    url "https://github.com/YOUR_GITHUB_OWNER/dsh-boot/releases/download/v#{version}/dsh-boot-#{version}-darwin-x64.tar.gz"
-    sha256 "REPLACE_WITH_X64_SHA256"
-  end
-
   def install
     # The archive has a self-contained root: node/, node_modules/, lib/, bin/.
     libexec.install Dir["*"]
