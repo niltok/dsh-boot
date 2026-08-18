@@ -183,7 +183,7 @@ Write-Host "dsh-boot: installation complete"
     const sh = String.raw`#!/bin/sh
 set -eu
 DIST_ROOT="$1"
-RUNTIME_ROOT="${2:-$HOME/.dsh-boot}"
+RUNTIME_ROOT="\${2:-$HOME/.dsh-boot}"
 
 NODE_VERSION="${NODE_VERSION}"
 DSH_VERSION="${DSH_VERSION}"
@@ -247,7 +247,7 @@ else
         npm_url=$(echo "$res" | cut -d'|' -f4)
 
         if [ "$time" -lt 9999 ]; then
-            echo "  $name: ${time}ms"
+            echo "  $name: \${time}ms"
             if [ "$time" -lt "$min_time" ]; then
                 min_time=$time
                 selected_node_mirror="$node_url"
