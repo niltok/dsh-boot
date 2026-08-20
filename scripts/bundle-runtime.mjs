@@ -63,6 +63,10 @@ function writeBootstrapScripts() {
       [string]$RuntimeRoot = "$HOME\\.dsh-boot"
     )
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+# PowerShell 5.1 defaults to TLS 1.0/1.1, which nodejs.org and most mirrors
+# reject. Pin TLS 1.2 so downloads work on older Windows builds.
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $NODE_VERSION = "${NODE_VERSION}"
 $DSH_VERSION = "${DSH_VERSION}"
@@ -133,11 +137,11 @@ if ($env:DSH_BOOT_NODE_MIRROR) {
 $nodeBase = "${nodeBase}"
 $nodeUrl = "$($selectedMirror.Node)/v${NODE_VERSION}/$nodeBase.zip"
 $npmRegistry = if ($env:DSH_BOOT_NPM_REGISTRY) { $env:DSH_BOOT_NPM_REGISTRY } else { $selectedMirror.NPM }
+if ([string]::IsNullOrWhiteSpace($npmRegistry)) { $npmRegistry = "https://registry.npmjs.org/" }
 
 # --- Installation ---
 $nodeDir = Join-Path $RuntimeRoot "node"
 if (Test-Path $nodeDir) { Remove-Item -Recurse -Force $nodeDir }
-New-Item -ItemType Directory -Path $nodeDir -Force
 
 $archivePath = Join-Path $RuntimeRoot "node.zip"
 Write-Host "dsh-boot: downloading Node.js from $nodeUrl..."
@@ -145,35 +149,55 @@ Invoke-WebRequest -Uri $nodeUrl -OutFile $archivePath
 
 Write-Host "dsh-boot: extracting Node.js..."
 Expand-Archive -Path $archivePath -DestinationPath $RuntimeRoot -Force
-$extractedDir = Get-ChildItem -Path $RuntimeRoot -Filter "node-v${NODE_VERSION}-win-${targetArch}*" | Select-Object -First 1
-Move-Item -Path $extractedDir.FullName -Destination $nodeDir -Force
 Remove-Item $archivePath -Force
 
-$nodeBin = Join-Path $nodeDir "node.exe"
-$npmCli = Join-Path $nodeDir "node_modules\\npm\\bin\\npm-cli.js"
+# Move-Item onto a *non-existent* target renames the extracted folder into
+# place. Pre-creating $nodeDir would nest it as node\node-vX.Y.Z-win-x64\.
+$extractedDir = Get-ChildItem -Path $RuntimeRoot -Filter "node-v${NODE_VERSION}-win-${targetArch}*" | Select-Object -First 1
+if ($null -eq $extractedDir) { throw "dsh-boot: extracted Node.js directory not found under $RuntimeRoot" }
+Move-Item -Path $extractedDir.FullName -Destination $nodeDir
 
-${writeRuntimeManifest()} | Set-Content -Path (Join-Path $RuntimeRoot "package.json")
+$nodeBin = Join-Path $nodeDir "node.exe"
+$npmCli = Join-Path $nodeDir "node_modules\npm\bin\npm-cli.js"
+if (!(Test-Path $nodeBin)) { throw "dsh-boot: node.exe missing at $nodeBin" }
+if (!(Test-Path $npmCli)) { throw "dsh-boot: npm-cli.js missing at $npmCli" }
+
+# Write UTF-8 without BOM: PowerShell 5.1 Set-Content defaults to ANSI, which
+# would corrupt any non-ASCII bytes in the manifest. A here-string keeps the
+# JSON literal (a bare { ... } would parse as a scriptblock).
+$manifestJson = @'
+${writeRuntimeManifest()}
+'@
+[System.IO.File]::WriteAllText((Join-Path $RuntimeRoot "package.json"), $manifestJson, [System.Text.UTF8Encoding]::new($false))
 
 Write-Host "dsh-boot: configuring npm registry to $npmRegistry..."
 & $nodeBin $npmCli config set registry $npmRegistry
+if ($LASTEXITCODE -ne 0) { throw "dsh-boot: npm config set registry failed (exit $LASTEXITCODE)" }
 
 Write-Host "dsh-boot: installing dependencies..."
-& $nodeBin $npmCli install --omit=dev --no-audit --no-fund --no-package-lock
+Push-Location $RuntimeRoot
+try {
+    & $nodeBin $npmCli install --omit=dev --no-audit --no-fund --no-package-lock
+    if ($LASTEXITCODE -ne 0) { throw "dsh-boot: npm install failed (exit $LASTEXITCODE)" }
+} finally {
+    Pop-Location
+}
 
-$cliDest = Join-Path $RuntimeRoot "lib\\dsh-boot"
+$cliDest = Join-Path $RuntimeRoot "lib\dsh-boot"
 if (Test-Path $cliDest) { Remove-Item -Recurse -Force $cliDest }
-Copy-Item -Path (Join-Path $DistRoot "lib\\dsh-boot") -Destination $cliDest -Recurse -Force
+Copy-Item -Path (Join-Path $DistRoot "lib\dsh-boot") -Destination $cliDest -Recurse -Force
 
-$pluginSrc = Join-Path $DistRoot "vendor\\restart-plugin"
-$pluginDest = Join-Path $RuntimeRoot "node_modules\\@dsh-boot\\restart-plugin"
+$pluginSrc = Join-Path $DistRoot "vendor\restart-plugin"
+$pluginDest = Join-Path $RuntimeRoot "node_modules\@dsh-boot\restart-plugin"
 if (Test-Path $pluginDest) { Remove-Item -Recurse -Force $pluginDest }
 New-Item -ItemType Directory -Path (Split-Path $pluginDest) -Force
 Copy-Item -Path $pluginSrc -Destination $pluginDest -Recurse -Force
 
-$dshManifestPath = Join-Path $RuntimeRoot "node_modules\\@deepseek-ai\\dsh\\package.json"
-$dshManifest = Get-Content $dshManifestPath | ConvertFrom-Json
+$dshManifestPath = Join-Path $RuntimeRoot "node_modules\@deepseek-ai\dsh\package.json"
+if (!(Test-Path $dshManifestPath)) { throw "dsh-boot: dsh package.json missing at $dshManifestPath" }
+$dshManifest = Get-Content $dshManifestPath -Raw | ConvertFrom-Json
 $dshManifest.dependencies["@dsh-boot/restart-plugin"] = "${version}"
-$dshManifest | ConvertTo-Json | Set-Content $dshManifestPath
+[System.IO.File]::WriteAllText($dshManifestPath, ($dshManifest | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
 
 Set-Content -Path (Join-Path $RuntimeRoot ".dsh-boot-install") -Value $DIST_VERSION
 Write-Host "dsh-boot: installation complete"
@@ -326,7 +350,7 @@ function writeWindowsWrappers() {
   const bin = join(outRoot, "bin");
   mkdirSync(bin, { recursive: true });
   
-  const bootCmd = `powershell -ExecutionPolicy Bypass -File "%DSH_BOOT_ROOT%\\scripts\\bootstrap.ps1" -DistRoot "%DSH_BOOT_ROOT%" -RuntimeRoot "%RUNTIME_ROOT%"`;
+  const bootCmd = `powershell -ExecutionPolicy Bypass -File "%DSH_BOOT_ROOT%\\scripts\\bootstrap.ps1" -DistRoot "%DSH_BOOT_ROOT%" -RuntimeRoot "%RUNTIME_ROOT%"\r\nif errorlevel 1 exit /b %errorlevel%`;
   
   writeFileSync(join(bin, "dsh-boot.cmd"), `@echo off\r\nsetlocal\r\nfor %%I in ("%~dp0..") do set "DSH_BOOT_ROOT=%%~fI"\r\nset "RUNTIME_ROOT=%USERPROFILE%\\.dsh-boot"\r\n${bootCmd}\r\nset "PATH=%RUNTIME_ROOT%\\node;%PATH%"\r\n"%RUNTIME_ROOT%\\node\\node.exe" "%RUNTIME_ROOT%\\lib\\dsh-boot\\bin.js" %*\r\nexit /b %ERRORLEVEL%\r\n`);
   writeFileSync(join(bin, "dsh.cmd"), `@echo off\r\nsetlocal\r\nfor %%I in ("%~dp0..") do set "DSH_BOOT_ROOT=%%~fI"\r\nset "RUNTIME_ROOT=%USERPROFILE%\\.dsh-boot"\r\n${bootCmd}\r\nset "PATH=%RUNTIME_ROOT%\\node;%PATH%"\r\n"%RUNTIME_ROOT%\\node\\node.exe" "%RUNTIME_ROOT%\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js" %*\r\nexit /b %ERRORLEVEL%\r\n`);
@@ -334,7 +358,7 @@ function writeWindowsWrappers() {
 
   const scripts = join(outRoot, "scripts");
   mkdirSync(scripts, { recursive: true });
-  writeFileSync(join(scripts, "dsh-boot-launch.ps1"), `param([string]$Action = 'launch')\r\n$ErrorActionPreference = 'Stop'\r\n$root = Split-Path -Parent $PSScriptRoot\r\n$runtimeRoot = "$HOME\\.dsh-boot"\r\n$node = Join-Path $runtimeRoot 'node\\node.exe'\r\n$cli = Join-Path $runtimeRoot 'lib\\dsh-boot\\bin.js'\r\n& $node $cli $Action @args\r\nexit $LASTEXITCODE\r\n`);
+  writeFileSync(join(scripts, "dsh-boot-launch.ps1"), `param([string]$Action = 'launch')\r\n$ErrorActionPreference = 'Stop'\r\n$root = Split-Path -Parent $PSScriptRoot\r\n$runtimeRoot = "$HOME\\.dsh-boot"\r\n# The Start Menu shortcut and the Run-key autostart both land here; make\r\n# sure the on-demand runtime exists before invoking node.\r\n& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'scripts\\bootstrap.ps1') -DistRoot $root -RuntimeRoot $runtimeRoot\r\nif ($LASTEXITCODE -ne 0) { Write-Error "dsh-boot: runtime bootstrap failed (exit $LASTEXITCODE)"; exit $LASTEXITCODE }\r\n$node = Join-Path $runtimeRoot 'node\\node.exe'\r\n$cli = Join-Path $runtimeRoot 'lib\\dsh-boot\\bin.js'\r\n& $node $cli $Action @args\r\nexit $LASTEXITCODE\r\n`);
   writeFileSync(join(scripts, "update-user-path.ps1"), UPDATE_USER_PATH_PS1);
 }
 
