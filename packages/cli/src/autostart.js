@@ -92,6 +92,10 @@ function launchAgentPlist() {
 }
 
 function launchAgentXml() {
+  // Go through the bootstrapping wrapper (~/.dsh-boot/bin/dsh-boot) instead of
+  // invoking node directly, so a missing/outdated runtime is installed on the
+  // spot at login.
+  const wrapper = join(paths.binDir, "dsh-boot");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -99,8 +103,7 @@ function launchAgentXml() {
   <key>Label</key><string>${escapeXml(AUTOSTART_ID)}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${escapeXml(paths.nodeBin)}</string>
-    <string>${escapeXml(paths.cliEntry)}</string>
+    <string>${escapeXml(wrapper)}</string>
     <string>run</string>
   </array>
   <key>WorkingDirectory</key><string>${escapeXml(homedir())}</string>
@@ -168,6 +171,9 @@ function systemdQuote(path) {
 }
 
 function linuxUnit() {
+  // ExecStart goes through the bootstrapping wrapper so a missing runtime is
+  // installed before the service starts.
+  const wrapper = join(paths.binDir, "dsh-boot");
   return `# Managed by dsh-boot. Regenerate with: dsh-boot autostart enable
 [Unit]
 Description=DeepSeek Harness web service (dsh-boot)
@@ -177,7 +183,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 Environment=DSH_BOOT_SUPERVISOR=1
-ExecStart=${systemdQuote(paths.nodeBin)} ${systemdQuote(paths.cliEntry)} run
+ExecStart=${systemdQuote(wrapper)} run
 WorkingDirectory=${systemdQuote(homedir())}
 Restart=on-failure
 RestartSec=3
@@ -188,11 +194,12 @@ WantedBy=default.target
 }
 
 function linuxDesktopAutostart() {
+  const wrapper = join(paths.binDir, "dsh-boot");
   return `[Desktop Entry]
 Type=Application
 Name=dsh-boot
 Comment=Start the DeepSeek Harness web service at login
-Exec=${systemdQuote(paths.nodeBin)} ${systemdQuote(paths.cliEntry)} start
+Exec=${systemdQuote(wrapper)} start
 Terminal=false
 X-GNOME-Autostart-enabled=true
 `;

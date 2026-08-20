@@ -324,6 +324,13 @@ CLI_DEST="$RUNTIME_ROOT/lib/dsh-boot"
 rm -rf "$CLI_DEST"
 cp -r "$DIST_ROOT/lib/dsh-boot" "$CLI_DEST"
 
+# Mirror the wrapper scripts and bin/ into the runtime root so autostart
+# entries (systemd/launchctl/XDG) can go through the bootstrapping wrapper
+# instead of invoking node directly.
+rm -rf "$RUNTIME_ROOT/scripts" "$RUNTIME_ROOT/bin"
+cp -r "$DIST_ROOT/scripts" "$RUNTIME_ROOT/scripts"
+cp -r "$DIST_ROOT/bin" "$RUNTIME_ROOT/bin"
+
 PLUGIN_SRC="$DIST_ROOT/vendor/restart-plugin"
 PLUGIN_DEST="$RUNTIME_ROOT/node_modules/@dsh-boot/restart-plugin"
 rm -rf "$PLUGIN_DEST"

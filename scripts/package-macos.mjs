@@ -50,9 +50,15 @@ const launcher = join(macos, "dsh-boot-launcher");
 writeFileSync(launcher, `#!/bin/bash
 set -eu
 ROOT="$(cd "$(dirname "$0")/../Resources" && pwd)"
-export PATH="$ROOT/bin:$PATH"
-NODE="$ROOT/node/bin/node"
-CLI="$ROOT/lib/dsh-boot/bin.js"
+RUNTIME_ROOT="$HOME/.dsh-boot"
+
+# The .app ships the lightweight bundle (no node/ or node_modules/). Ensure the
+# on-demand runtime exists before invoking node, exactly like the bin wrappers.
+"$ROOT/scripts/bootstrap.sh" "$ROOT" "$RUNTIME_ROOT"
+
+export PATH="$RUNTIME_ROOT/bin:$PATH"
+NODE="$RUNTIME_ROOT/node/bin/node"
+CLI="$RUNTIME_ROOT/lib/dsh-boot/bin.js"
 
 # First launch from the app enables login autostart once. The marker lives in
 # user state, so a later "dsh-boot autostart disable" (from Homebrew or the
