@@ -78,7 +78,9 @@ $DIST_VERSION = (Get-Content (Join-Path $DistRoot ".dsh-boot-install")).Trim()
 
 if (Test-Path (Join-Path $RuntimeRoot ".dsh-boot-install")) {
     $installedVersion = (Get-Content (Join-Path $RuntimeRoot ".dsh-boot-install")).Trim()
-    if ($installedVersion -eq $DIST_VERSION) {
+    # A version match alone is not enough: a previous failed install may have
+    # left a marker-less runtime behind. Require node.exe to be present too.
+    if ($installedVersion -eq $DIST_VERSION -and (Test-Path (Join-Path $RuntimeRoot "node\node.exe"))) {
         exit 0
     }
 }
@@ -164,7 +166,7 @@ if (-not $ok) {
         $m = $MIRRORS | Where-Object { $_.Name -eq $name }
         if ($null -eq $m) { continue }
         $tryUrl = "$($m.Node)/v${NODE_VERSION}/$nodeBase.zip"
-        Write-Host "dsh-boot: mirror $($selectedMirror.Name) failed; trying $($m.Name): $tryUrl"
+        Write-Host "dsh-boot: download failed; trying $($m.Name): $tryUrl"
         if (Download-Node $tryUrl $archivePath) {
             $nodeUrl = $tryUrl
             $selectedMirror = $m
@@ -261,7 +263,9 @@ DIST_VERSION=$(cat "$DIST_ROOT/.dsh-boot-install" | tr -d '\\r\\n')
 
 if [ -f "$RUNTIME_ROOT/.dsh-boot-install" ]; then
     INSTALLED_VERSION=$(cat "$RUNTIME_ROOT/.dsh-boot-install" | tr -d '\\r\\n')
-    if [ "$INSTALLED_VERSION" = "$DIST_VERSION" ]; then
+    # Version match alone is not enough: a failed install may have left a
+    # half-installed runtime. Require node to be present too.
+    if [ "$INSTALLED_VERSION" = "$DIST_VERSION" ] && [ -x "$RUNTIME_ROOT/node/bin/node" ]; then
         exit 0
     fi
 fi
