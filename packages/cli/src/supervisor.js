@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { acquireStartLock, ensureBootDir, isPidAlive, readJson, writeJsonAtomic } from "./fsutil.js";
+import { migrateLegacyCredentialsFile } from "./credentials-migrate.js";
 import { readStartupArgs } from "./startup-args.js";
 import { paths } from "./paths.js";
 import { writeInjectedPatch } from "./patch.js";
@@ -350,6 +351,9 @@ function openCommands(url) {
 
 function spawnDshChild() {
   const bootId = randomUUID();
+  if (migrateLegacyCredentialsFile()) {
+    log("dsh-boot: migrated legacy ~/.dsh/.credentials.yaml (version/refs) to the flat format required by dsh; original kept at .credentials.yaml.bak");
+  }
   const patchFile = writeInjectedPatch();
   const startupArgs = readStartupArgs();
   const token = currentState?.token ?? randomBytes(32).toString("hex");
