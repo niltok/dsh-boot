@@ -49,10 +49,12 @@ function writeRuntimeManifest() {
       "@deepseek-ai/dsh": DSH_VERSION,
       pnpm: PNPM_VERSION,
     },
-    // pnpm >= 10 blocks dependency build scripts unless listed here. The list
-    // is the full set of packages in the dsh dependency tree that ship
-    // preinstall/install/postinstall scripts (verified against the runtime
-    // tree). pnpm 11 reads this from pnpm-workspace.yaml, not package.json.
+    // pnpm >= 10 blocks dependency build scripts unless allowed. pnpm 11
+    // reads the per-package allowBuilds map from pnpm-workspace.yaml (the
+    // package.json pnpm field is ignored) and fails with
+    // ERR_PNPM_IGNORED_BUILDS for every package left undecided. The list is
+    // the full set of packages in the dsh dependency tree that ship
+    // preinstall/install/postinstall scripts (verified against the tree).
     pnpm: {
       onlyBuiltDependencies: [
         "koffi",
@@ -265,15 +267,16 @@ ${writeRuntimeManifest()}
 '@
 [System.IO.File]::WriteAllText((Join-Path $RuntimeRoot "package.json"), $manifestJson, [System.Text.UTF8Encoding]::new($false))
 
-# pnpm 11 reads the build-script allowlist from pnpm-workspace.yaml, not from
-# package.json. Without it, pnpm install fails with ERR_PNPM_IGNORED_BUILDS.
+# pnpm 11 reads the build-script allowlist from pnpm-workspace.yaml as a
+# per-package allowBuilds map; without explicit true/false for every package
+# that ships lifecycle scripts, pnpm install fails with ERR_PNPM_IGNORED_BUILDS.
 $workspaceYaml = @'
-onlyBuiltDependencies:
-  - koffi
-  - node-pty
-  - '@deepseek-ai/dsh-subprocess-local'
-  - '@google/genai'
-  - protobufjs
+allowBuilds:
+  koffi: true
+  node-pty: true
+  '@deepseek-ai/dsh-subprocess-local': true
+  '@google/genai': true
+  protobufjs: true
 '@
 [System.IO.File]::WriteAllText((Join-Path $RuntimeRoot "pnpm-workspace.yaml"), $workspaceYaml, [System.Text.UTF8Encoding]::new($false))
 
@@ -480,15 +483,16 @@ cat <<EOF > "$RUNTIME_ROOT/package.json"
 ${writeRuntimeManifest()}
 EOF
 
-# pnpm 11 reads the build-script allowlist from pnpm-workspace.yaml, not from
-# package.json. Without it, pnpm install fails with ERR_PNPM_IGNORED_BUILDS.
+# pnpm 11 reads the build-script allowlist from pnpm-workspace.yaml as a
+# per-package allowBuilds map; without explicit true/false for every package
+# that ships lifecycle scripts, pnpm install fails with ERR_PNPM_IGNORED_BUILDS.
 cat <<'EOF' > "$RUNTIME_ROOT/pnpm-workspace.yaml"
-onlyBuiltDependencies:
-  - koffi
-  - node-pty
-  - '@deepseek-ai/dsh-subprocess-local'
-  - '@google/genai'
-  - protobufjs
+allowBuilds:
+  koffi: true
+  node-pty: true
+  '@deepseek-ai/dsh-subprocess-local': true
+  '@google/genai': true
+  protobufjs: true
 EOF
 
 echo "dsh-boot: configuring npm registry to $npm_registry..."
