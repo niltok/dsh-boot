@@ -49,6 +49,12 @@ function writeRuntimeManifest() {
       "@deepseek-ai/dsh": DSH_VERSION,
       pnpm: PNPM_VERSION,
     },
+    // pnpm >= 10 blocks dependency build scripts unless listed here. koffi's
+    // cnoke.cjs and pnpm's own scripts must run; the rest ship platform
+    // binaries and have no build step.
+    pnpm: {
+      onlyBuiltDependencies: ["koffi", "pnpm", "node-pty", "sharp", "esbuild"],
+    },
   };
   return `${JSON.stringify(manifest, null, 2)}\n`;
 }
@@ -93,13 +99,40 @@ $logsDir = Join-Path $RuntimeRoot "logs"
 New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
 try { Start-Transcript -Path (Join-Path $logsDir "bootstrap.log") -Force | Out-Null } catch { }
 
-# --- Mirror Selection (HEAD probes only; never download the directory page) ---
+# --- Mirror Selection: measure real download speed ---
+# Link latency says little about throughput. Probe each source by actually
+# downloading the first chunk of a real file: 1MB of the Node tarball and
+# 512KB of the pnpm package tarball from the matching npm registry.
 $MIRRORS = @(
     @{ Name = "Official"; Node = "https://nodejs.org/dist"; NPM = "https://registry.npmjs.org/" },
     @{ Name = "npmmirror"; Node = "https://npmmirror.com/mirrors/node"; NPM = "https://registry.npmmirror.com/" },
     @{ Name = "Huawei"; Node = "https://mirrors.huaweicloud.com/nodejs"; NPM = "https://repo.huaweicloud.com/repository/npm/" },
     @{ Name = "Tencent"; Node = "https://mirrors.cloud.tencent.com/nodejs-release"; NPM = "https://mirrors.cloud.tencent.com/npm/" }
 )
+
+function Measure-Speed([string]$Url, [int]$Bytes) {
+    # Returns bytes/sec measured over the first $Bytes bytes, or 0 on failure.
+    $curl = Join-Path $env:SystemRoot "System32\curl.exe"
+    if (Test-Path $curl) {
+        $probe = Join-Path $env:TEMP "dsh-boot-probe.bin"
+        $out = & $curl -L -sS --max-time 8 -r 0-$($Bytes - 1) -o $probe -w '%{speed_download}' $Url 2>$null
+        Remove-Item $probe -Force -ErrorAction SilentlyContinue
+        if ($LASTEXITCODE -eq 0 -and $out) {
+            try { return [double]$out } catch { return 0.0 }
+        }
+        return 0.0
+    }
+    # No curl (pre-1803 Windows): fall back to a HEAD probe with a pseudo speed.
+    try {
+        $client = [System.Net.Http.HttpClient]::new()
+        $client.Timeout = [System.TimeSpan]::FromSeconds(3)
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $resp = $client.GetAsync($Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
+        $resp.Dispose()
+        $sw.Stop()
+        return 1e9 / [math]::Max(1.0, $sw.Elapsed.TotalMilliseconds)
+    } catch { return 0.0 }
+}
 
 function Download-Node([string]$Url, [string]$OutFile) {
     if (Test-Path $OutFile) { Remove-Item -Force $OutFile }
@@ -116,38 +149,45 @@ function Download-Node([string]$Url, [string]$OutFile) {
     }
 }
 
-$selectedMirror = $null
+$nodeBase = "${nodeBase}"
+$selectedMirror = $null   # fastest Node.js source
+$selectedRegistry = $null # fastest npm registry
 if ($env:DSH_BOOT_NODE_MIRROR) {
     Write-Host "dsh-boot: using manual mirror override: $($env:DSH_BOOT_NODE_MIRROR)"
     $selectedMirror = @{ Name = "Manual"; Node = $env:DSH_BOOT_NODE_MIRROR; NPM = $env:DSH_BOOT_NPM_REGISTRY }
+    $selectedRegistry = $selectedMirror
 } else {
-    Write-Host "dsh-boot: probing mirrors (HEAD)..."
-    $client = [System.Net.Http.HttpClient]::new()
-    $client.Timeout = [System.TimeSpan]::FromSeconds(3)
-    $fastest = [double]::MaxValue
+    Write-Host "dsh-boot: measuring download speed (1MB node probe, 512KB registry probe)..."
+    $bestNode = 0.0
+    $bestReg = 0.0
     foreach ($m in $MIRRORS) {
-        try {
-            $sw = [System.Diagnostics.Stopwatch]::StartNew()
-            $resp = $client.GetAsync($m.Node, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
-            $resp.Dispose()
-            $sw.Stop()
-            $ms = $sw.Elapsed.TotalMilliseconds
-            Write-Host ("  {0}: {1}ms" -f $m.Name, [math]::Round($ms))
-            if ($ms -lt $fastest) { $fastest = $ms; $selectedMirror = $m }
-        } catch {
-            $inner = $_.Exception
-            while ($null -ne $inner.InnerException) { $inner = $inner.InnerException }
-            Write-Host ("  {0}: unreachable ({1})" -f $m.Name, $inner.Message)
+        $nodeProbe = "$($m.Node)/v${NODE_VERSION}/$nodeBase.zip"
+        $regProbe = "$($m.NPM)pnpm/-/pnpm-${PNPM_VERSION}.tgz"
+        $ns = Measure-Speed $nodeProbe 1048576
+        $rs = Measure-Speed $regProbe 524288
+        if ($ns -gt 0) {
+            Write-Host ("  {0}: node {1:N0} KB/s, registry {2:N0} KB/s" -f $m.Name, ($ns / 1KB), ($rs / 1KB))
+            if ($ns -gt $bestNode) { $bestNode = $ns; $selectedMirror = $m }
+            if ($rs -gt $bestReg) { $bestReg = $rs; $selectedRegistry = $m }
+        } else {
+            Write-Host ("  {0}: unreachable" -f $m.Name)
         }
     }
     if ($null -eq $selectedMirror) {
-        Write-Host "dsh-boot: no mirror reachable; will try downloads in priority order"
+        Write-Host "dsh-boot: no Node source reachable; will try downloads in priority order"
     } else {
-        Write-Host "dsh-boot: selected fastest mirror: $($selectedMirror.Name)"
+        Write-Host "dsh-boot: fastest Node source: $($selectedMirror.Name)"
+    }
+    if ($null -eq $selectedRegistry) {
+        Write-Host "dsh-boot: no npm registry reachable; will fall back to npmmirror"
+    } else {
+        Write-Host "dsh-boot: fastest npm registry: $($selectedRegistry.Name)"
     }
 }
 
-$nodeBase = "${nodeBase}"
+$npmRegistry = if ($env:DSH_BOOT_NPM_REGISTRY) { $env:DSH_BOOT_NPM_REGISTRY }
+    elseif ($null -ne $selectedRegistry) { $selectedRegistry.NPM }
+    else { "https://registry.npmmirror.com/" }
 $archivePath = Join-Path $RuntimeRoot "node.zip"
 
 # --- Download Node.js ---
@@ -192,9 +232,6 @@ Remove-Item $archivePath -Force
 $nodeDir = Join-Path $RuntimeRoot "node"
 if (Test-Path $nodeDir) { Remove-Item -Recurse -Force $nodeDir }
 
-$npmRegistry = if ($env:DSH_BOOT_NPM_REGISTRY) { $env:DSH_BOOT_NPM_REGISTRY } else { $selectedMirror.NPM }
-if ([string]::IsNullOrWhiteSpace($npmRegistry)) { $npmRegistry = "https://registry.npmjs.org/" }
-
 # Move-Item onto a *non-existent* target renames the extracted folder into
 # place. Pre-creating $nodeDir would nest it as node\node-vX.Y.Z-win-x64\.
 $extractedDir = Get-ChildItem -Path $RuntimeRoot -Filter "node-v${NODE_VERSION}-win-${targetArch}*" | Select-Object -First 1
@@ -206,6 +243,9 @@ $npmCli = Join-Path $nodeDir "node_modules\npm\bin\npm-cli.js"
 if (!(Test-Path $nodeBin)) { throw "dsh-boot: node.exe missing at $nodeBin" }
 if (!(Test-Path $npmCli)) { throw "dsh-boot: npm-cli.js missing at $npmCli" }
 
+# Install scripts (pnpm's, koffi's cnoke.cjs, ...) invoke 'node' by name.
+$env:PATH = "$nodeDir;$env:PATH"
+
 # Write UTF-8 without BOM: PowerShell 5.1 Set-Content defaults to ANSI, which
 # would corrupt any non-ASCII bytes in the manifest. A here-string keeps the
 # JSON literal (a bare { ... } would parse as a scriptblock).
@@ -214,18 +254,21 @@ ${writeRuntimeManifest()}
 '@
 [System.IO.File]::WriteAllText((Join-Path $RuntimeRoot "package.json"), $manifestJson, [System.Text.UTF8Encoding]::new($false))
 
-Write-Host "dsh-boot: configuring npm registry to $npmRegistry..."
-& $nodeBin $npmCli config set registry $npmRegistry
-if ($LASTEXITCODE -ne 0) { throw "dsh-boot: npm config set registry failed (exit $LASTEXITCODE)" }
+# Runtime-local .npmrc so we never touch the user's global npm config.
+[System.IO.File]::WriteAllText((Join-Path $RuntimeRoot ".npmrc"), "registry=$npmRegistry", [System.Text.UTF8Encoding]::new($false))
 
-Write-Host "dsh-boot: installing dependencies..."
-# npm postinstall scripts (e.g. koffi's cnoke.cjs) invoke 'node' by name;
-# make sure it resolves before running install.
-$env:PATH = "$nodeDir;$env:PATH"
+Write-Host "dsh-boot: installing pnpm ${PNPM_VERSION} from $npmRegistry..."
+& $nodeBin $npmCli install -g "pnpm@${PNPM_VERSION}" --prefix $nodeDir --registry $npmRegistry --no-audit --no-fund
+if ($LASTEXITCODE -ne 0) { throw "dsh-boot: npm install -g pnpm failed (exit $LASTEXITCODE)" }
+
+$pnpmCli = Join-Path $nodeDir "node_modules\pnpm\bin\pnpm.cjs"
+if (!(Test-Path $pnpmCli)) { throw "dsh-boot: pnpm.cjs missing at $pnpmCli" }
+
+Write-Host "dsh-boot: installing dependencies with pnpm (parallel downloads)..."
 Push-Location $RuntimeRoot
 try {
-    & $nodeBin $npmCli install --omit=dev --no-audit --no-fund --no-package-lock
-    if ($LASTEXITCODE -ne 0) { throw "dsh-boot: npm install failed (exit $LASTEXITCODE)" }
+    & $nodeBin $pnpmCli install --prod --no-lockfile --network-concurrency 8
+    if ($LASTEXITCODE -ne 0) { throw "dsh-boot: pnpm install failed (exit $LASTEXITCODE)" }
 } finally {
     Pop-Location
 }
@@ -283,13 +326,14 @@ Tencent|https://mirrors.cloud.tencent.com/nodejs-release|https://mirrors.cloud.t
 
 selected_node_mirror=""
 selected_npm_registry=""
+node_base="${nodeBase}"
 
 if [ -n "\${DSH_BOOT_NODE_MIRROR:-}" ]; then
     echo "dsh-boot: using manual mirror override: \${DSH_BOOT_NODE_MIRROR}"
     selected_node_mirror="\${DSH_BOOT_NODE_MIRROR}"
     selected_npm_registry="\${DSH_BOOT_NPM_REGISTRY:-}"
 else
-    echo "dsh-boot: probing mirrors (HEAD)..."
+    echo "dsh-boot: measuring download speed (1MB node probe, 512KB registry probe)..."
     TMP_DIR=$(mktemp -d)
     for m in $MIRRORS; do
         [ -z "$m" ] && continue
@@ -298,58 +342,65 @@ else
             node_url=$(echo "$m" | cut -d'|' -f2)
             npm_url=$(echo "$m" | cut -d'|' -f3)
 
-            # -r 0-0 fetches a single byte; -w prints total time (seconds,
-            # float) so we never depend on 'date +%N' (missing on macOS).
-            time=$(curl -sL -o /dev/null --connect-timeout 3 --max-time 3 -r 0-0 -w '%{time_total}' "$node_url" 2>/dev/null)
-            rc=$?
-            if [ $rc -eq 0 ]; then
-                ms=$(awk -v t="$time" 'BEGIN { printf "%d", t*1000 }')
-                echo "$ms|$name|$node_url|$npm_url" > "$TMP_DIR/$name"
-            else
-                echo "9999|$name||" > "$TMP_DIR/$name"
-            fi
+            # Probe by actually downloading the first chunk of a real file:
+            # 1MB of the Node tarball and 512KB of the pnpm tarball from the
+            # matching registry. -w prints bytes/sec (float), so no date +%N.
+            node_speed=$(curl -sL -o /dev/null --max-time 8 -r 0-1048575 -w '%{speed_download}' "$node_url/v${NODE_VERSION}/$node_base.tar.gz" 2>/dev/null)
+            reg_speed=$(curl -sL -o /dev/null --max-time 8 -r 0-524287 -w '%{speed_download}' "$npm_url/pnpm/-/pnpm-${PNPM_VERSION}.tgz" 2>/dev/null)
+            echo "$name|$node_url|$npm_url|$node_speed|$reg_speed" > "$TMP_DIR/$name"
         ) &
     done
     wait
 
-    min_time=9999
+    best_node=0
+    best_reg=0
     for res_file in "$TMP_DIR"/*; do
         [ -e "$res_file" ] || continue
         res=$(cat "$res_file")
-        time=$(echo "$res" | cut -d'|' -f1)
-        name=$(echo "$res" | cut -d'|' -f2)
-        node_url=$(echo "$res" | cut -d'|' -f3)
-        npm_url=$(echo "$res" | cut -d'|' -f4)
+        name=$(echo "$res" | cut -d'|' -f1)
+        node_url=$(echo "$res" | cut -d'|' -f2)
+        npm_url=$(echo "$res" | cut -d'|' -f3)
+        node_speed=$(echo "$res" | cut -d'|' -f4)
+        reg_speed=$(echo "$res" | cut -d'|' -f5)
 
-        if [ "$time" -lt 9999 ]; then
-            echo "  $name: \${time}ms"
-            if [ "$time" -lt "$min_time" ]; then
-                min_time=$time
-                selected_node_mirror="$node_url"
-                selected_npm_registry="$npm_url"
-            fi
+        node_kb=$(awk -v s="$node_speed" 'BEGIN { printf "%d", s/1024 }')
+        reg_kb=$(awk -v s="$reg_speed" 'BEGIN { printf "%d", s/1024 }')
+        if [ "$node_kb" -gt 0 ]; then
+            echo "  $name: node \${node_kb} KB/s, registry \${reg_kb} KB/s"
         else
             echo "  $name: unreachable"
+        fi
+        if awk -v s="$node_speed" -v b="$best_node" 'BEGIN { exit !(s > b) }'; then
+            best_node="$node_speed"
+            selected_node_mirror="$node_url"
+        fi
+        if awk -v s="$reg_speed" -v b="$best_reg" 'BEGIN { exit !(s > b) }'; then
+            best_reg="$reg_speed"
+            selected_npm_registry="$npm_url"
         fi
     done
     rm -rf "$TMP_DIR"
 
     if [ -z "$selected_node_mirror" ]; then
-        echo "dsh-boot: no mirror reachable; will try downloads in priority order"
+        echo "dsh-boot: no Node source reachable; will try downloads in priority order"
     else
-        echo "dsh-boot: selected fastest mirror"
+        echo "dsh-boot: fastest Node source selected"
+    fi
+    if [ -z "$selected_npm_registry" ]; then
+        echo "dsh-boot: no npm registry reachable; will fall back to npmmirror"
+    else
+        echo "dsh-boot: fastest npm registry selected"
     fi
 fi
 
 npm_registry="\${DSH_BOOT_NPM_REGISTRY:-$selected_npm_registry}"
-if [ -z "$npm_registry" ]; then npm_registry="https://registry.npmjs.org/"; fi
+if [ -z "$npm_registry" ]; then npm_registry="https://registry.npmmirror.com/"; fi
 
 # --- Installation ---
 NODE_DIR="$RUNTIME_ROOT/node"
 rm -rf "$NODE_DIR"
 mkdir -p "$NODE_DIR"
 
-node_base="${nodeBase}"
 ARCHIVE="$RUNTIME_ROOT/node.tar.gz"
 
 download_node() {
@@ -407,10 +458,21 @@ ${writeRuntimeManifest()}
 EOF
 
 echo "dsh-boot: configuring npm registry to $npm_registry..."
-"$NODE_BIN" "$NPM_CLI" config set registry "$npm_registry"
+# Runtime-local .npmrc; never touch the user's global npm config.
+printf 'registry=%s\n' "$npm_registry" > "$RUNTIME_ROOT/.npmrc"
 
-echo "dsh-boot: installing dependencies..."
-"$NODE_BIN" "$NPM_CLI" install --omit=dev --no-audit --no-fund --no-package-lock
+echo "dsh-boot: installing pnpm ${PNPM_VERSION} from $npm_registry..."
+"$NODE_BIN" "$NPM_CLI" install -g "pnpm@${PNPM_VERSION}" --prefix "$NODE_DIR" --registry "$npm_registry" --no-audit --no-fund
+if [ $? -ne 0 ]; then echo "dsh-boot: npm install -g pnpm failed" >&2; exit 1; fi
+
+PNPM_CLI="$NODE_DIR/lib/node_modules/pnpm/bin/pnpm.cjs"
+if [ ! -f "$PNPM_CLI" ]; then echo "dsh-boot: pnpm.cjs missing at $PNPM_CLI" >&2; exit 1; fi
+
+echo "dsh-boot: installing dependencies with pnpm (parallel downloads)..."
+(
+    cd "$RUNTIME_ROOT" && "$NODE_BIN" "$PNPM_CLI" install --prod --no-lockfile --network-concurrency 8
+)
+if [ $? -ne 0 ]; then echo "dsh-boot: pnpm install failed" >&2; exit 1; fi
 
 CLI_DEST="$RUNTIME_ROOT/lib/dsh-boot"
 rm -rf "$CLI_DEST"
