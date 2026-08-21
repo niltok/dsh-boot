@@ -217,6 +217,9 @@ Write-Host "dsh-boot: configuring npm registry to $npmRegistry..."
 if ($LASTEXITCODE -ne 0) { throw "dsh-boot: npm config set registry failed (exit $LASTEXITCODE)" }
 
 Write-Host "dsh-boot: installing dependencies..."
+# npm postinstall scripts (e.g. koffi's cnoke.cjs) invoke 'node' by name;
+# make sure it resolves before running install.
+$env:PATH = "$nodeDir;$env:PATH"
 Push-Location $RuntimeRoot
 try {
     & $nodeBin $npmCli install --omit=dev --no-audit --no-fund --no-package-lock
@@ -392,6 +395,8 @@ rm "$ARCHIVE"
 
 NODE_BIN="$NODE_DIR/bin/node"
 NPM_CLI="$NODE_DIR/lib/node_modules/npm/bin/npm-cli.js"
+# npm postinstall scripts (e.g. koffi's cnoke.cjs) invoke 'node' by name.
+export PATH="$NODE_DIR/bin:$PATH"
 
 cat <<EOF > "$RUNTIME_ROOT/package.json"
 ${writeRuntimeManifest()}
