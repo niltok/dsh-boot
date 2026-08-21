@@ -67,6 +67,9 @@ $ProgressPreference = 'SilentlyContinue'
 # PowerShell 5.1 defaults to TLS 1.0/1.1, which nodejs.org and most mirrors
 # reject. Pin TLS 1.2 so downloads work on older Windows builds.
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+# System.Net.Http is not loaded by default in Windows PowerShell 5.1;
+# without this the mirror probes fail with "Unable to find type".
+Add-Type -AssemblyName System.Net.Http
 
 $NODE_VERSION = "${NODE_VERSION}"
 $DSH_VERSION = "${DSH_VERSION}"
@@ -83,7 +86,12 @@ if (Test-Path (Join-Path $RuntimeRoot ".dsh-boot-install")) {
 Write-Host "dsh-boot: installing/updating runtime to $DIST_VERSION..."
 if (!(Test-Path $RuntimeRoot)) { New-Item -ItemType Directory -Path $RuntimeRoot -Force }
 
-# --- Parallel Mirror Selection ---
+# Record everything below for diagnosis (PS 5.1 transcript overwrites).
+$logsDir = Join-Path $RuntimeRoot "logs"
+New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
+try { Start-Transcript -Path (Join-Path $logsDir "bootstrap.log") -Force | Out-Null } catch { }
+
+# --- Mirror Selection (HEAD probes only; never download the directory page) ---
 $MIRRORS = @(
     @{ Name = "Official"; Node = "https://nodejs.org/dist"; NPM = "https://registry.npmjs.org/" },
     @{ Name = "npmmirror"; Node = "https://npmmirror.com/mirrors/node"; NPM = "https://registry.npmmirror.com/" },
@@ -91,65 +99,99 @@ $MIRRORS = @(
     @{ Name = "Tencent"; Node = "https://mirrors.cloud.tencent.com/nodejs-release"; NPM = "https://mirrors.cloud.tencent.com/npm/" }
 )
 
+function Download-Node([string]$Url, [string]$OutFile) {
+    if (Test-Path $OutFile) { Remove-Item -Force $OutFile }
+    $curl = Join-Path $env:SystemRoot "System32\curl.exe"
+    if (Test-Path $curl) {
+        & $curl -L --fail --connect-timeout 15 --max-time 900 -sS -o $OutFile $Url
+        return $LASTEXITCODE -eq 0
+    }
+    try {
+        Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 $selectedMirror = $null
 if ($env:DSH_BOOT_NODE_MIRROR) {
     Write-Host "dsh-boot: using manual mirror override: $($env:DSH_BOOT_NODE_MIRROR)"
     $selectedMirror = @{ Name = "Manual"; Node = $env:DSH_BOOT_NODE_MIRROR; NPM = $env:DSH_BOOT_NPM_REGISTRY }
 } else {
-    Write-Host "dsh-boot: testing mirrors in parallel..."
-    $jobs = @()
+    Write-Host "dsh-boot: probing mirrors (HEAD)..."
+    $client = [System.Net.Http.HttpClient]::new()
+    $client.Timeout = [System.TimeSpan]::FromSeconds(3)
+    $fastest = [double]::MaxValue
     foreach ($m in $MIRRORS) {
-        $job = Start-Job -ScriptBlock {
-            param($m)
-            try {
-                $start = Get-Date
-                $req = [System.Net.Http.HttpClient]::new()
-                $req.Timeout = [System.TimeSpan]::FromSeconds(2)
-                $null = $req.GetStringAsync($m.Node).Result
-                $elapsed = ((Get-Date) - $start).TotalMilliseconds
-                return @{ Name = $m.Name; Node = $m.Node; NPM = $m.NPM; Time = $elapsed; Success = $true }
-            } catch {
-                return @{ Name = $m.Name; Success = $false }
-            }
-        } -ArgumentList $m
-        $jobs += $job
-    }
-
-    $results = $jobs | Wait-Job | Receive-Job
-    $jobs | Remove-Job
-
-    $minTime = [double]::MaxValue
-    foreach ($res in $results) {
-        if ($res.Success) {
-            Write-Host ("  {0}: {1}ms" -f $res.Name, [math]::Round($res.Time))
-            if ($res.Time -lt $minTime) {
-                $minTime = $res.Time
-                $selectedMirror = $res
-            }
-        } else {
-            Write-Host ("  {0}: timeout/error" -f $res.Name)
+        try {
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            $resp = $client.GetAsync($m.Node, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
+            $resp.Dispose()
+            $sw.Stop()
+            $ms = $sw.Elapsed.TotalMilliseconds
+            Write-Host ("  {0}: {1}ms" -f $m.Name, [math]::Round($ms))
+            if ($ms -lt $fastest) { $fastest = $ms; $selectedMirror = $m }
+        } catch {
+            $inner = $_.Exception
+            while ($null -ne $inner.InnerException) { $inner = $inner.InnerException }
+            Write-Host ("  {0}: unreachable ({1})" -f $m.Name, $inner.Message)
         }
     }
-    if ($null -eq $selectedMirror) { $selectedMirror = $MIRRORS[0] }
-    Write-Host "dsh-boot: selected fastest mirror: $($selectedMirror.Name)"
+    if ($null -eq $selectedMirror) {
+        Write-Host "dsh-boot: no mirror reachable; will try downloads in priority order"
+    } else {
+        Write-Host "dsh-boot: selected fastest mirror: $($selectedMirror.Name)"
+    }
 }
 
 $nodeBase = "${nodeBase}"
-$nodeUrl = "$($selectedMirror.Node)/v${NODE_VERSION}/$nodeBase.zip"
-$npmRegistry = if ($env:DSH_BOOT_NPM_REGISTRY) { $env:DSH_BOOT_NPM_REGISTRY } else { $selectedMirror.NPM }
-if ([string]::IsNullOrWhiteSpace($npmRegistry)) { $npmRegistry = "https://registry.npmjs.org/" }
+$archivePath = Join-Path $RuntimeRoot "node.zip"
 
-# --- Installation ---
+# --- Download Node.js ---
+# Fastest mirror first (or manual override); on failure walk the mirror list
+# in priority order and use the first mirror that actually downloads.
+$nodeUrl = ""
+$ok = $false
+if ($null -ne $selectedMirror) {
+    $nodeUrl = "$($selectedMirror.Node)/v${NODE_VERSION}/$nodeBase.zip"
+    Write-Host "dsh-boot: downloading Node.js from $($selectedMirror.Name): $nodeUrl"
+    $ok = Download-Node $nodeUrl $archivePath
+}
+if (-not $ok) {
+    $priority = @("npmmirror", "Huawei", "Tencent", "Official")
+    foreach ($name in $priority) {
+        $m = $MIRRORS | Where-Object { $_.Name -eq $name }
+        if ($null -eq $m) { continue }
+        $tryUrl = "$($m.Node)/v${NODE_VERSION}/$nodeBase.zip"
+        Write-Host "dsh-boot: mirror $($selectedMirror.Name) failed; trying $($m.Name): $tryUrl"
+        if (Download-Node $tryUrl $archivePath) {
+            $nodeUrl = $tryUrl
+            $selectedMirror = $m
+            $ok = $true
+            break
+        }
+    }
+}
+if (-not $ok) {
+    throw "dsh-boot: all mirrors failed to download Node.js (see $logsDir\bootstrap.log). Set DSH_BOOT_NODE_MIRROR to a reachable mirror and run again."
+}
+
+Write-Host "dsh-boot: extracting Node.js..."
+$tar = Join-Path $env:SystemRoot "System32\tar.exe"
+if (Test-Path $tar) {
+    & $tar -xf $archivePath -C $RuntimeRoot
+    if ($LASTEXITCODE -ne 0) { throw "dsh-boot: tar extraction failed (exit $LASTEXITCODE)" }
+} else {
+    Expand-Archive -Path $archivePath -DestinationPath $RuntimeRoot -Force
+}
+Remove-Item $archivePath -Force
+
 $nodeDir = Join-Path $RuntimeRoot "node"
 if (Test-Path $nodeDir) { Remove-Item -Recurse -Force $nodeDir }
 
-$archivePath = Join-Path $RuntimeRoot "node.zip"
-Write-Host "dsh-boot: downloading Node.js from $nodeUrl..."
-Invoke-WebRequest -Uri $nodeUrl -OutFile $archivePath
-
-Write-Host "dsh-boot: extracting Node.js..."
-Expand-Archive -Path $archivePath -DestinationPath $RuntimeRoot -Force
-Remove-Item $archivePath -Force
+$npmRegistry = if ($env:DSH_BOOT_NPM_REGISTRY) { $env:DSH_BOOT_NPM_REGISTRY } else { $selectedMirror.NPM }
+if ([string]::IsNullOrWhiteSpace($npmRegistry)) { $npmRegistry = "https://registry.npmjs.org/" }
 
 # Move-Item onto a *non-existent* target renames the extracted folder into
 # place. Pre-creating $nodeDir would nest it as node\node-vX.Y.Z-win-x64\.
@@ -224,7 +266,7 @@ fi
 echo "dsh-boot: installing/updating runtime to $DIST_VERSION..."
 mkdir -p "$RUNTIME_ROOT"
 
-# --- Parallel Mirror Selection ---
+# --- Mirror Selection (HEAD probes; never download the directory page) ---
 MIRRORS="
 Official|https://nodejs.org/dist|https://registry.npmjs.org/
 npmmirror|https://npmmirror.com/mirrors/node|https://registry.npmmirror.com/
@@ -240,7 +282,7 @@ if [ -n "\${DSH_BOOT_NODE_MIRROR:-}" ]; then
     selected_node_mirror="\${DSH_BOOT_NODE_MIRROR}"
     selected_npm_registry="\${DSH_BOOT_NPM_REGISTRY:-}"
 else
-    echo "dsh-boot: testing mirrors in parallel..."
+    echo "dsh-boot: probing mirrors (HEAD)..."
     TMP_DIR=$(mktemp -d)
     for m in $MIRRORS; do
         [ -z "$m" ] && continue
@@ -248,12 +290,14 @@ else
             name=$(echo "$m" | cut -d'|' -f1)
             node_url=$(echo "$m" | cut -d'|' -f2)
             npm_url=$(echo "$m" | cut -d'|' -f3)
-            
-            start=$(date +%s%3N)
-            if curl -sL --max-time 2 "$node_url" > /dev/null; then
-                end=$(date +%s%3N)
-                elapsed=$((end - start))
-                echo "$elapsed|$name|$node_url|$npm_url" > "$TMP_DIR/$name"
+
+            # -r 0-0 fetches a single byte; -w prints total time (seconds,
+            # float) so we never depend on 'date +%N' (missing on macOS).
+            time=$(curl -sL -o /dev/null --connect-timeout 3 --max-time 3 -r 0-0 -w '%{time_total}' "$node_url" 2>/dev/null)
+            rc=$?
+            if [ $rc -eq 0 ]; then
+                ms=$(awk -v t="$time" 'BEGIN { printf "%d", t*1000 }')
+                echo "$ms|$name|$node_url|$npm_url" > "$TMP_DIR/$name"
             else
                 echo "9999|$name||" > "$TMP_DIR/$name"
             fi
@@ -278,19 +322,20 @@ else
                 selected_npm_registry="$npm_url"
             fi
         else
-            echo "  $name: timeout/error"
+            echo "  $name: unreachable"
         fi
     done
     rm -rf "$TMP_DIR"
 
     if [ -z "$selected_node_mirror" ]; then
-        selected_node_mirror="https://nodejs.org/dist"
-        selected_npm_registry="https://registry.npmjs.org/"
+        echo "dsh-boot: no mirror reachable; will try downloads in priority order"
+    else
+        echo "dsh-boot: selected fastest mirror"
     fi
-    echo "dsh-boot: selected fastest mirror"
 fi
 
 npm_registry="\${DSH_BOOT_NPM_REGISTRY:-$selected_npm_registry}"
+if [ -z "$npm_registry" ]; then npm_registry="https://registry.npmjs.org/"; fi
 
 # --- Installation ---
 NODE_DIR="$RUNTIME_ROOT/node"
@@ -298,14 +343,52 @@ rm -rf "$NODE_DIR"
 mkdir -p "$NODE_DIR"
 
 node_base="${nodeBase}"
-node_url="$selected_node_mirror/v${NODE_VERSION}/$node_base.tar.gz"
+ARCHIVE="$RUNTIME_ROOT/node.tar.gz"
 
-echo "dsh-boot: downloading Node.js from $node_url..."
-curl -L "$node_url" -o "$RUNTIME_ROOT/node.tar.gz"
+download_node() {
+    url="$1"
+    rm -f "$ARCHIVE"
+    if curl -L --fail --connect-timeout 15 --max-time 900 -sS -o "$ARCHIVE" "$url"; then
+        return 0
+    fi
+    return 1
+}
+
+# Fastest mirror first (or manual override); on failure walk the list in
+# priority order and use the first mirror that actually downloads.
+node_url=""
+if [ -n "$selected_node_mirror" ]; then
+    node_url="$selected_node_mirror/v${NODE_VERSION}/$node_base.tar.gz"
+    echo "dsh-boot: downloading Node.js from $node_url..."
+    if ! download_node "$node_url"; then
+        echo "dsh-boot: download failed; trying other mirrors"
+        node_url=""
+    fi
+fi
+if [ -z "$node_url" ]; then
+    for name in npmmirror Huawei Tencent Official; do
+        m=$(echo "$MIRRORS" | grep "^$name|" | head -1)
+        [ -z "$m" ] && continue
+        m_node=$(echo "$m" | cut -d'|' -f2)
+        m_npm=$(echo "$m" | cut -d'|' -f3)
+        try_url="$m_node/v${NODE_VERSION}/$node_base.tar.gz"
+        echo "dsh-boot: trying $name: $try_url"
+        if download_node "$try_url"; then
+            node_url="$try_url"
+            selected_npm_registry="$m_npm"
+            npm_registry="\${DSH_BOOT_NPM_REGISTRY:-$selected_npm_registry}"
+            break
+        fi
+    done
+fi
+if [ -z "$node_url" ]; then
+    echo "dsh-boot: all mirrors failed to download Node.js. Set DSH_BOOT_NODE_MIRROR to a reachable mirror and run again." >&2
+    exit 1
+fi
 
 echo "dsh-boot: extracting Node.js..."
-tar -xzf "$RUNTIME_ROOT/node.tar.gz" -C "$NODE_DIR" --strip-components 1
-rm "$RUNTIME_ROOT/node.tar.gz"
+tar -xzf "$ARCHIVE" -C "$NODE_DIR" --strip-components 1
+rm "$ARCHIVE"
 
 NODE_BIN="$NODE_DIR/bin/node"
 NPM_CLI="$NODE_DIR/lib/node_modules/npm/bin/npm-cli.js"
@@ -357,7 +440,7 @@ function writeWindowsWrappers() {
   const bin = join(outRoot, "bin");
   mkdirSync(bin, { recursive: true });
   
-  const bootCmd = `powershell -ExecutionPolicy Bypass -File "%DSH_BOOT_ROOT%\\scripts\\bootstrap.ps1" -DistRoot "%DSH_BOOT_ROOT%" -RuntimeRoot "%RUNTIME_ROOT%"\r\nif errorlevel 1 exit /b %errorlevel%`;
+  const bootCmd = `powershell -ExecutionPolicy Bypass -File "%DSH_BOOT_ROOT%\\scripts\\bootstrap.ps1" -DistRoot "%DSH_BOOT_ROOT%" -RuntimeRoot "%RUNTIME_ROOT%"\r\nif errorlevel 1 (\r\n  echo dsh-boot: runtime bootstrap failed; see "%RUNTIME_ROOT%\\logs\\bootstrap.log"\r\n  exit /b %errorlevel%\r\n)`;
   
   writeFileSync(join(bin, "dsh-boot.cmd"), `@echo off\r\nsetlocal\r\nfor %%I in ("%~dp0..") do set "DSH_BOOT_ROOT=%%~fI"\r\nset "RUNTIME_ROOT=%USERPROFILE%\\.dsh-boot"\r\n${bootCmd}\r\nset "PATH=%RUNTIME_ROOT%\\node;%PATH%"\r\n"%RUNTIME_ROOT%\\node\\node.exe" "%RUNTIME_ROOT%\\lib\\dsh-boot\\bin.js" %*\r\nexit /b %ERRORLEVEL%\r\n`);
   writeFileSync(join(bin, "dsh.cmd"), `@echo off\r\nsetlocal\r\nfor %%I in ("%~dp0..") do set "DSH_BOOT_ROOT=%%~fI"\r\nset "RUNTIME_ROOT=%USERPROFILE%\\.dsh-boot"\r\n${bootCmd}\r\nset "PATH=%RUNTIME_ROOT%\\node;%PATH%"\r\n"%RUNTIME_ROOT%\\node\\node.exe" "%RUNTIME_ROOT%\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js" %*\r\nexit /b %ERRORLEVEL%\r\n`);
@@ -365,7 +448,7 @@ function writeWindowsWrappers() {
 
   const scripts = join(outRoot, "scripts");
   mkdirSync(scripts, { recursive: true });
-  writeFileSync(join(scripts, "dsh-boot-launch.ps1"), `param([string]$Action = 'launch')\r\n$ErrorActionPreference = 'Stop'\r\n$root = Split-Path -Parent $PSScriptRoot\r\n$runtimeRoot = "$HOME\\.dsh-boot"\r\n# The Start Menu shortcut and the Run-key autostart both land here; make\r\n# sure the on-demand runtime exists before invoking node.\r\n& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'scripts\\bootstrap.ps1') -DistRoot $root -RuntimeRoot $runtimeRoot\r\nif ($LASTEXITCODE -ne 0) { Write-Error "dsh-boot: runtime bootstrap failed (exit $LASTEXITCODE)"; exit $LASTEXITCODE }\r\n$node = Join-Path $runtimeRoot 'node\\node.exe'\r\n$cli = Join-Path $runtimeRoot 'lib\\dsh-boot\\bin.js'\r\n& $node $cli $Action @args\r\nexit $LASTEXITCODE\r\n`);
+  writeFileSync(join(scripts, "dsh-boot-launch.ps1"), `param([string]$Action = 'launch')\r\n$ErrorActionPreference = 'Stop'\r\n$root = Split-Path -Parent $PSScriptRoot\r\n$runtimeRoot = "$HOME\\.dsh-boot"\r\n# The Start Menu shortcut and the Run-key autostart both land here; make\r\n# sure the on-demand runtime exists before invoking node.\r\n& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'scripts\\bootstrap.ps1') -DistRoot $root -RuntimeRoot $runtimeRoot\r\nif ($LASTEXITCODE -ne 0) {\r\n  Add-Type -AssemblyName System.Windows.Forms | Out-Null\r\n  [System.Windows.Forms.MessageBox]::Show("dsh-boot could not start: runtime bootstrap failed (exit $LASTEXITCODE).\n\nSee $runtimeRoot\\logs\\bootstrap.log for details.", 'dsh-boot') | Out-Null\r\n  exit $LASTEXITCODE\r\n}\r\n$node = Join-Path $runtimeRoot 'node\\node.exe'\r\n$cli = Join-Path $runtimeRoot 'lib\\dsh-boot\\bin.js'\r\n& $node $cli $Action @args\r\nexit $LASTEXITCODE\r\n`);
   writeFileSync(join(scripts, "update-user-path.ps1"), UPDATE_USER_PATH_PS1);
 }
 
