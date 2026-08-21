@@ -118,11 +118,14 @@ $MIRRORS = @(
 )
 
 function Measure-Speed([string]$Url, [int]$Bytes) {
-    # Returns bytes/sec measured over the first $Bytes bytes, or 0 on failure.
+    # With $ErrorActionPreference='Stop', PS 5.1 turns a redirected stderr of a
+    # native command into a terminating error. Curl failing (timeout) must not
+    # abort bootstrap, so keep this function immune and never redirect stderr.
+    $ErrorActionPreference = 'Continue'
     $curl = Join-Path $env:SystemRoot "System32\curl.exe"
     if (Test-Path $curl) {
         $probe = Join-Path $env:TEMP "dsh-boot-probe.bin"
-        $out = & $curl -L -sS --max-time 8 -r 0-$($Bytes - 1) -o $probe -w '%{speed_download}' $Url 2>$null
+        $out = & $curl -L -s --connect-timeout 3 --max-time 8 -r 0-$($Bytes - 1) -o $probe -w '%{speed_download}' $Url
         Remove-Item $probe -Force -ErrorAction SilentlyContinue
         if ($LASTEXITCODE -eq 0 -and $out) {
             try { return [double]$out } catch { return 0.0 }
@@ -142,6 +145,7 @@ function Measure-Speed([string]$Url, [int]$Bytes) {
 }
 
 function Download-Node([string]$Url, [string]$OutFile) {
+    $ErrorActionPreference = 'Continue'
     if (Test-Path $OutFile) { Remove-Item -Force $OutFile }
     $curl = Join-Path $env:SystemRoot "System32\curl.exe"
     if (Test-Path $curl) {
