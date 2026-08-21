@@ -49,11 +49,18 @@ function writeRuntimeManifest() {
       "@deepseek-ai/dsh": DSH_VERSION,
       pnpm: PNPM_VERSION,
     },
-    // pnpm >= 10 blocks dependency build scripts unless listed here. koffi's
-    // cnoke.cjs and pnpm's own scripts must run; the rest ship platform
-    // binaries and have no build step.
+    // pnpm >= 10 blocks dependency build scripts unless listed here. The list
+    // is the full set of packages in the dsh dependency tree that ship
+    // preinstall/install/postinstall scripts (verified against the runtime
+    // tree). pnpm 11 reads this from pnpm-workspace.yaml, not package.json.
     pnpm: {
-      onlyBuiltDependencies: ["koffi", "pnpm", "node-pty", "sharp", "esbuild"],
+      onlyBuiltDependencies: [
+        "koffi",
+        "node-pty",
+        "@deepseek-ai/dsh-subprocess-local",
+        "@google/genai",
+        "protobufjs",
+      ],
     },
   };
   return `${JSON.stringify(manifest, null, 2)}\n`;
@@ -253,6 +260,18 @@ $manifestJson = @'
 ${writeRuntimeManifest()}
 '@
 [System.IO.File]::WriteAllText((Join-Path $RuntimeRoot "package.json"), $manifestJson, [System.Text.UTF8Encoding]::new($false))
+
+# pnpm 11 reads the build-script allowlist from pnpm-workspace.yaml, not from
+# package.json. Without it, pnpm install fails with ERR_PNPM_IGNORED_BUILDS.
+$workspaceYaml = @'
+onlyBuiltDependencies:
+  - koffi
+  - node-pty
+  - '@deepseek-ai/dsh-subprocess-local'
+  - '@google/genai'
+  - protobufjs
+'@
+[System.IO.File]::WriteAllText((Join-Path $RuntimeRoot "pnpm-workspace.yaml"), $workspaceYaml, [System.Text.UTF8Encoding]::new($false))
 
 # Runtime-local .npmrc so we never touch the user's global npm config.
 [System.IO.File]::WriteAllText((Join-Path $RuntimeRoot ".npmrc"), "registry=$npmRegistry", [System.Text.UTF8Encoding]::new($false))
@@ -455,6 +474,17 @@ export PATH="$NODE_DIR/bin:$PATH"
 
 cat <<EOF > "$RUNTIME_ROOT/package.json"
 ${writeRuntimeManifest()}
+EOF
+
+# pnpm 11 reads the build-script allowlist from pnpm-workspace.yaml, not from
+# package.json. Without it, pnpm install fails with ERR_PNPM_IGNORED_BUILDS.
+cat <<'EOF' > "$RUNTIME_ROOT/pnpm-workspace.yaml"
+onlyBuiltDependencies:
+  - koffi
+  - node-pty
+  - '@deepseek-ai/dsh-subprocess-local'
+  - '@google/genai'
+  - protobufjs
 EOF
 
 echo "dsh-boot: configuring npm registry to $npm_registry..."
