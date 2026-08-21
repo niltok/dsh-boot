@@ -312,7 +312,9 @@ Copy-Item -Path $pluginSrc -Destination $pluginDest -Recurse -Force
 $dshManifestPath = Join-Path $RuntimeRoot "node_modules\@deepseek-ai\dsh\package.json"
 if (!(Test-Path $dshManifestPath)) { throw "dsh-boot: dsh package.json missing at $dshManifestPath" }
 $dshManifest = Get-Content $dshManifestPath -Raw | ConvertFrom-Json
-$dshManifest.dependencies["@dsh-boot/restart-plugin"] = "${version}"
+# ConvertFrom-Json yields PSCustomObject; index assignment ($obj["k"]=v) is not
+# supported on it (CannotIndex), so add the property via Add-Member instead.
+$dshManifest.dependencies | Add-Member -NotePropertyName "@dsh-boot/restart-plugin" -NotePropertyValue "${version}" -Force
 [System.IO.File]::WriteAllText($dshManifestPath, ($dshManifest | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
 
 Set-Content -Path (Join-Path $RuntimeRoot ".dsh-boot-install") -Value $DIST_VERSION
